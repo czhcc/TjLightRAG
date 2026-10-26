@@ -1,0 +1,7 @@
+**/target/
+frontend/node_modules/
+frontend/dist/
+.env
+*.log
+frontend/*.tsbuildinfo
+docker/images/*.tar
