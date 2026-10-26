@@ -69,15 +69,3 @@ prod profile 必须设置 DB_URL、DB_USERNAME、DB_PASSWORD；默认 secure coo
 
 参阅 AGENTS.md、docs/CODING_STANDARDS.md 和 DESIGN.md。禁止在 main 分支生成代码。
 开发完成后先合并 main 再推送；本次初始化不自动提交或推送。
-
-## Codex 云环境
-
-初始化：`bash docs/scripts/setup-cloud.sh`。后续终端先执行 `source docs/scripts/cloud-env.sh`。
-该脚本为当前云平台准备完整 JDK 21（基础机器只有 JRE）、Maven 和外部依赖缓存；不改写依赖清单或锁文件。
-数据库开发凭据仅用于隔离的本地开发实例。
-
-云环境构建镜像：先 `source docs/scripts/cloud-env.sh`，再运行 `python docs/scripts/build-cloud.py`。
-该辅助程序为 BuildKit 提供云代理主机解析，并通过临时 secret 挂载 CA 和 Maven 代理配置；不关闭 TLS 验证，不把代理配置或证书写入最终镜像。
-普通开发机直接使用 Docker Compose 构建，无需此辅助程序。
-
-本次验证记录见 docs/VALIDATION.md。本地镜像归档位于 docker/images/tjlightrag.tar（已忽略，不提交 Git）。
