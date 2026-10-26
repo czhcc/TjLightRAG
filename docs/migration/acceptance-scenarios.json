@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "origin": "authored-target-contract; not executed upstream results",
+  "scenarios": [
+    {
+      "id": "delete-shared-provenance",
+      "source": "lightrag/lightrag.py:adelete_by_doc_id + lightrag/operate.py:rebuild_knowledge_from_chunks",
+      "stage": 6,
+      "input": {
+        "documents": {
+          "d1": [
+            "c1"
+          ],
+          "d2": [
+            "c2"
+          ]
+        },
+        "entities": {
+          "Alice": {
+            "c1": "Alice uses RAG.",
+            "c2": "Alice builds graphs."
+          }
+        },
+        "edges": {
+          "Alice|LightRAG": {
+            "c1": 1,
+            "c2": 1
+          }
+        },
+        "delete": "d1"
+      },
+      "expected": {
+        "visible_documents": [
+          "d2"
+        ],
+        "visible_chunks": [
+          "c2"
+        ],
+        "Alice_sources": [
+          "c2"
+        ],
+        "Alice_description": "Alice builds graphs.",
+        "edge_weight": 1,
+        "deleted_text_must_not_be_retrievable": true
+      }
+    },
+    {
+      "id": "delete-shared-chunk",
+      "source": "lightrag/lightrag.py:adelete_by_doc_id",
+      "stage": 6,
+      "input": {
+        "documents": {
+          "d1": [
+            "c1"
+          ],
+          "d2": [
+            "c1"
+          ]
+        },
+        "delete": "d1"
+      },
+      "expected": {
+        "visible_documents": [
+          "d2"
+        ],
+        "visible_chunks": [
+          "c1"
+        ],
+        "remaining_document_chunk_links": [
+          [
+            "d2",
+            "c1"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "index-generation-failure",
+      "source": "lightrag/pipeline.py:process_single_document + lightrag/lightrag.py:adelete_by_doc_id",
+      "stage": 6,
+      "input": {
+        "active": "g1",
+        "building": "g2",
+        "event": "embedding_failure"
+      },
+      "expected": {
+        "active": "g1",
+        "g2_visible": false,
+        "g1_still_queryable": true
+      }
+    },
+    {
+      "id": "persistent-job-recovery",
+      "source": "lightrag/pipeline.py:apipeline_process_enqueue_documents",
+      "stage": 2,
+      "input": {
+        "job": "j1",
+        "document": "d1",
+        "checkpoint": "chunks_saved",
+        "event": "worker_restart"
+      },
+      "expected": {
+        "document_count": 1,
+        "job_can_resume": true,
+        "duplicate_publication_count": 0
+      }
+    },
+    {
+      "id": "bypass-no-retrieval",
+      "source": "lightrag/lightrag.py:aquery_llm",
+      "stage": 5,
+      "input": {
+        "mode": "bypass",
+        "query": "hello",
+        "model_response": "Hello."
+      },
+      "expected": {
+        "answer": "Hello.",
+        "graph_calls": 0,
+        "vector_calls": 0,
+        "references": []
+      }
+    },
+    {
+      "id": "cache-generation-isolation",
+      "source": "lightrag/operate.py:_answer_cache_kv + lightrag/utils.py:compute_args_hash",
+      "stage": 5,
+      "input": {
+        "query": "same",
+        "knowledge_bases": [
+          "kb1",
+          "kb2"
+        ],
+        "generations": [
+          "g1",
+          "g2"
+        ],
+        "modes": [
+          "mix",
+          "local"
+        ]
+      },
+      "expected": {
+        "cross_knowledge_base_cache_hit": false,
+        "cross_generation_cache_hit": false,
+        "cross_mode_cache_hit": false
+      }
+    }
+  ]
+}

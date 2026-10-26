@@ -4,3 +4,4 @@
 .git
 .env
 docker/images/
+**/.env

@@ -3,6 +3,14 @@ spring:
     url: ${DB_URL}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+  flyway:
+    url: ${DB_URL}
+    user: ${DB_MIGRATION_USERNAME}
+    password: ${DB_MIGRATION_PASSWORD}
+rag:
+  vector:
+    dimensions: ${RAG_VECTOR_DIMENSIONS}
+    model: ${RAG_EMBEDDING_MODEL}
 server:
   forward-headers-strategy: framework
   servlet:

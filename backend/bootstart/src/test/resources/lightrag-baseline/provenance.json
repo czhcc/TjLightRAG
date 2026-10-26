@@ -1,0 +1,18 @@
+{
+  "case_count": 50,
+  "corpus_sha256": "8e3262030f31beb9b322bd9c055fe6a34173c3a4dd5ee59416e49cbe40a429df",
+  "source_sha256": {
+    "LICENSE": "0c16924564059e493c86854574660a47ed1dcc2a476ba7b5f949d3f2f73a1984",
+    "lightrag/base.py": "e7f0ec700659071d616b4c81c8711626d512d356d0036ce6f8da8d9a37a19f28",
+    "lightrag/chunker/token_size.py": "f121ae47281f09367b6c199fb84d2aee6e7ce040e8019e3dbcc4fcee14171572",
+    "lightrag/kg/pgtable_impl.py": "aaca3025da542137815f135ba3637ef8cd1597fc3025d691837158359af83149",
+    "lightrag/kg/postgres_impl.py": "a0b20252e130e6928dc57ad778b4d4ed2a7ecdd11001db4c604f9b03bb9b7c56",
+    "lightrag/lightrag.py": "f92e25bf1bf8082dba64f604fe22badaeaa69ef2eaa34d23c5058059be8031d3",
+    "lightrag/operate.py": "176585e3f686574ab98657b666982302ce47d58229baacb529ef601bd6799326",
+    "lightrag/pipeline.py": "aa32ffeee11032019aee0009afe5d4a1bebcb9d51ab8b3104b6b74f98dc636d2",
+    "lightrag/prompt.py": "db0cf2d0f5d420a8372fac2b33043d8b4f14c84ec0a60653862e4e53a27047e1",
+    "lightrag/utils.py": "8c49d4b0150fdfc3343d85770a46c0c49da5b6c6a81c09eb5ca10a997c8dcdbe",
+    "uv.lock": "4fd20d6dda6f2d4b8b844de445b31e28d9adeb9ccff3f071f2e5ea8983f7a418"
+  },
+  "upstream_commit": "aaebfe1bb8d55deb6a4304d357a3bf4c92fcd40a"
+}
