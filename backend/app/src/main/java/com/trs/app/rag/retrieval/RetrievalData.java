@@ -47,11 +47,26 @@ public final class RetrievalData {
 
   /** Shared evidence text with all bounded, explicitly scoped source occurrences. @author agent */
   @Value
+  @lombok.AllArgsConstructor
   public static class Chunk {
     String id, content, filePath;
     List<String> headings;
     Double score;
     List<Origin> origins;
+    Double rerankScore;
+
+    /**
+     * Creates an unreranked chunk without confusing cosine similarity and relevance. @author agent
+     */
+    public Chunk(
+        String id,
+        String content,
+        String filePath,
+        List<String> headings,
+        Double score,
+        List<Origin> origins) {
+      this(id, content, filePath, headings, score, origins, null);
+    }
   }
 
   /** Validity is separate from a well-formed but empty keyword result. @author agent */

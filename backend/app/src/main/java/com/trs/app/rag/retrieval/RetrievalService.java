@@ -58,6 +58,17 @@ public class RetrievalService {
    * answer. @author agent
    */
   public Result query(UUID kb, String actor, RetrievalRequest request) {
+    return query(kb, actor, request, java.util.function.UnaryOperator.identity());
+  }
+
+  /**
+   * Applies a request-scoped chunk selector before final truncation and references. @author agent
+   */
+  public Result query(
+      UUID kb,
+      String actor,
+      RetrievalRequest request,
+      java.util.function.UnaryOperator<List<Chunk>> selector) {
     if (!slots.tryAcquire()) throw new RetrievalFailure("retrieval_busy", 429);
     try {
       if (request == null
@@ -189,7 +200,7 @@ public class RetrievalService {
       for (var chunk : raw.getVectors()) scores.put(chunk.getId(), chunk.getScore());
       List<Chunk> hydrated = repository.hydrate(snapshot, actor, merged, scores);
       checkDeadline(deadline);
-      ContextPlan plan = planner.finish(query, request, graph, hydrated);
+      ContextPlan plan = planner.finish(query, request, graph, selector.apply(hydrated));
       for (var chunk : plan.getChunks()) {
         String id = chunk.get("chunk_id").toString();
         List<String> paths = new ArrayList<>();

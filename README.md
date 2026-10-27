@@ -2,7 +2,7 @@
 
 JDK 21 / Spring Boot 4.1.2 / Spring AI 2.0.2 / PostgreSQL 18 + pgvector 0.8.7 / React + TypeScript + Vite + Tailwind CSS。
 版本来自 Maven Central 最新稳定版（2026-10-26），不采用 RC/M 预发布版本。
-Spring AI 已接入文本/向量模型兼容协议适配，可配置模型、抽取实体关系并构建/切换图谱与向量索引。五种模式检索已接入，回答与流式输出留待阶段 5；文档解析与分块不需要模型密钥。
+Spring AI 已接入文本/向量模型兼容协议适配，可配置模型、抽取实体关系并构建/切换图谱与向量索引。五种模式检索、回答、POST SSE 流式输出和可选重排已接入（真实供应商质量仍待联调）；文档解析与分块不需要模型密钥。
 
 ## 目录
 
@@ -64,7 +64,7 @@ docker compose --env-file docker/.env -f docker/compose.yml up -d --build
 prod profile 必须设置运行/迁移两套数据库凭据、RAG_EMBEDDING_MODEL、RAG_VECTOR_DIMENSIONS；默认 secure cookie，部署在可信 HTTPS 反向代理后。
 仅本地 HTTP 验证时设置 COOKIE_SECURE=false。不要将该覆盖用于公网生产环境。
 镜像导出：`docker save tjlightrag:local -o docker/images/tjlightrag.tar`；镜像归档不提交到 Git。
-会话保存在内存，服务重启需要重新登录。已提供知识库及成员权限、三类向量原始存储、TXT/Markdown 导入、持久化任务及真实 BPE 分块。已接入模型配置、实体关系抽取、embedding 生成和索引构建/原子切换；已提供 naive/local/global/hybrid/mix 检索及历史来源定位，回答生成尚未开放。“已分块”只表示文档预处理完成；请另行构建并激活索引。详见 docs/migration/STAGE_2.md 和 docs/migration/STAGE_3.md。
+会话保存在内存，服务重启需要重新登录。已提供知识库及成员权限、三类向量原始存储、TXT/Markdown 导入、持久化任务及真实 BPE 分块。已接入模型配置、实体关系抽取、embedding 生成和索引构建/原子切换；已提供 naive/local/global/hybrid/mix 检索及历史来源定位，已开放单轮问答、流式取消和提示词预览。“已分块”只表示文档预处理完成；请另行构建并激活索引。详见 docs/migration/STAGE_2.md 和 docs/migration/STAGE_3.md。
 
 ## 协作
 
@@ -81,12 +81,18 @@ prod profile 必须设置运行/迁移两套数据库凭据、RAG_EMBEDDING_MODE
 
 部署时通过安全配置注入 `RAG_MODEL_MASTER_KEY`（Base64 的 32 字节随机 AES 密钥）并设置 `RAG_MODEL_ALLOWED_HOSTS`（允许服务主机名，逗号分隔）。主密钥默认不生成，缺失时无法保存非空 API 密钥；应与数据库备份一起保留，不能在重启时更换。默认仅 HTTPS；可信本地开发可设置 `RAG_MODEL_ALLOW_HTTP=true`。不要把密钥或含密钥的 .env 提交到 Git。
 
-管理员登录后进入顶部“模型配置”，填写兼容服务地址、模型名、API 密钥及限制，执行连接测试，绑定抽取/摘要/向量用途；重排可选，查询重排和问答将在后续接入。保存编辑产生新版本，密钥只返回是否已配置。
+管理员登录后进入顶部“模型配置”，填写兼容服务地址、模型名、API 密钥及限制，执行连接测试，绑定抽取/摘要/向量/回答用途，关键词与重排可独立绑定；重排可选。保存编辑产生新版本，密钥只返回是否已配置。
 
 在知识库页面上传文档并等待“已分块”，再“构建新索引”。新代完整构建后手动激活；旧代继续保留，可再次激活回退。相同维度的不同模型也需重建；不同维度按索引代隔离，支持 1..2000 维。参数、接口、算法差异和验收见 docs/migration/STAGE_3.md。
 
 ## 检索证据
 
-激活完整索引后，在知识库“检索证据”中选择 naive/local/global/hybrid/mix，查看块、实体关系、引用及原文选区。默认 mix，可调整召回数量、相似度阈值、来源策略、关键词和 token 预算；不产生模型回答，重排留待阶段 5。
+激活完整索引后，在知识库“检索证据”中选择 naive/local/global/hybrid/mix，查看块、实体关系、引用及原文选区。默认 mix，可调整召回数量、相似度阈值、来源策略、关键词和 token 预算；该诊断接口不产生模型回答；问答页面可选择重排。
 
 查询固定开始时的索引代及其向量模型，支持模型切换期间读取旧代。首次默认精确 cosine，未自动启用会受过滤影响的全局 ANN；相关实验和差异见 docs/migration/STAGE_4.md。关键词未绑定时使用当前代的抽取模型，naive 不调用关键词模型。配置 `RAG_RETRIEVAL_MAX_CONCURRENCY` / `RAG_RETRIEVAL_TIMEOUT_SECONDS` 可限制实例并发及调用期限。
+
+## 知识库问答
+
+绑定回答模型并激活索引后，在“知识库问答”中提问，选择五种模式、可选重排，查看流式答案和原文引用。“停止生成”中止读取并通知服务端取消；断流或模型错误显示未完成，不将部分内容视为成功。支持上下文/实际提示词预览。首版单轮、回答缓存禁用；不执行答案 HTML，未匹配引用会提示核对。
+
+接口、SSE 事件、预算、限额、同实例取消要求及真实供应商验收边界见 [阶段 5](docs/migration/STAGE_5.md)。真实模型需在管理员页面配置，不在源码或日志存放密钥。通过本地测试不代表真实回答质量已验收。

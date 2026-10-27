@@ -84,4 +84,16 @@ class TextBodyLimitTest {
       assertTrue(response.getContentAsString().contains("retrieval_request_too_large"));
     }
   }
+
+  @Test
+  void queryAndStreamBodiesAreBoundedBeforeJackson() throws Exception {
+    for (String path : java.util.List.of("/query", "/query/stream", "/query/id/cancel")) {
+      var request = new MockHttpServletRequest("POST", "/api/knowledge-bases/k" + path);
+      request.setContent(new byte[256 * 1024 + 1]);
+      var response = new MockHttpServletResponse();
+      new TextBodyLimitFilter()
+          .doFilter(request, response, (q, r) -> fail("Oversized query reached Jackson"));
+      assertEquals(413, response.getStatus());
+    }
+  }
 }

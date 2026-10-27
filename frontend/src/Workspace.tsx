@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import IndexPanel from "./IndexPanel";
 import RetrievalPanel from "./RetrievalPanel";
+import QueryPanel from "./QueryPanel";
 import { ApiError, mutate, request, text as fetchText } from "./api";
 
 type Base = {
@@ -395,6 +396,11 @@ export default function Workspace({
                 {t("workspace.readOnly")}
               </p>
             )}
+            <QueryPanel
+              key={"query-" + selectedId}
+              kb={selectedId}
+              onSessionExpired={onSessionExpired}
+            />
             <RetrievalPanel
               key={"retrieval-" + selectedId}
               kb={selectedId}

@@ -217,6 +217,7 @@ public class RetrievalAlgorithms {
             chunk.getOrigins().stream().map(o -> ids.get(o.getSourceName())).distinct().toList());
       } else row.put("sources", List.of());
       if (chunk.getScore() != null) row.put("score", chunk.getScore());
+      if (chunk.getRerankScore() != null) row.put("rerank_score", chunk.getRerankScore());
       rows.add(row);
     }
     return new ReferenceResult(references, rows);

@@ -29,7 +29,11 @@ public class TextBodyLimitFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain chain)
       throws ServletException, IOException {
     String path = request.getRequestURI().substring(request.getContextPath().length());
-    boolean retrieval = path.endsWith("/retrieval");
+    boolean retrieval =
+        path.endsWith("/retrieval")
+            || path.endsWith("/query")
+            || path.endsWith("/query/stream")
+            || path.matches(".*/query/[^/]+/cancel");
     if (!path.startsWith("/api/knowledge-bases/")
         || !request.getMethod().equals("POST")
         || !(retrieval || path.endsWith("/documents/text"))) {

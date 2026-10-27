@@ -7,6 +7,7 @@ import com.trs.app.rag.*;
 import com.trs.app.rag.index.*;
 import com.trs.app.rag.ingestion.*;
 import com.trs.app.rag.model.*;
+import com.trs.app.rag.query.*;
 import com.trs.app.rag.retrieval.*;
 import com.trs.app.rag.retrieval.RetrievalData.*;
 import java.net.*;
@@ -64,6 +65,8 @@ class RetrievalIntegrationTest {
     r.add("rag.vector.model", () -> "fixture-3d");
   }
 
+  @Autowired QueryService answers;
+  @Autowired QueryStreams streams;
   @Autowired RetrievalService retrieval;
   @Autowired RetrievalRepository repository;
   @Autowired ModelConfigurationService models;
@@ -84,6 +87,12 @@ class RetrievalIntegrationTest {
   List<List<String>> embeddingInputs = new CopyOnWriteArrayList<>();
   AtomicInteger keywordCalls = new AtomicInteger();
   AtomicBoolean failEmbedding = new AtomicBoolean();
+  AtomicInteger answerCalls = new AtomicInteger();
+  AtomicBoolean failStream = new AtomicBoolean(),
+      blockStream = new AtomicBoolean(),
+      badRerank = new AtomicBoolean();
+  CountDownLatch answerEntered = new CountDownLatch(1), answerReleased = new CountDownLatch(1);
+  List<String> answerModels = new CopyOnWriteArrayList<>();
   AtomicReference<Runnable> switchIndex = new AtomicReference<>();
   volatile CountDownLatch entered, release;
 
@@ -131,6 +140,50 @@ class RetrievalIntegrationTest {
                 data.add(Map.of("index", i, "embedding", v));
               }
               response = json.writeValueAsString(Map.of("data", data));
+            } else if (e.getRequestURI().getPath().endsWith("/rerank")) {
+              List<Map<String, Object>> ranks = new ArrayList<>();
+              for (int i = body.path("documents").size() - 1; i >= 0; i--)
+                ranks.add(Map.of("index", badRerank.get() ? 999 : i, "relevance_score", .9));
+              response = json.writeValueAsString(Map.of("results", ranks));
+            } else if (body.path("model").asText().startsWith("answer")) {
+              answerCalls.incrementAndGet();
+              answerModels.add(body.path("model").asText());
+              if (body.path("stream").asBoolean()) {
+                e.getResponseHeaders().set("Content-Type", "text/event-stream");
+                e.sendResponseHeaders(200, 0);
+                e.getResponseBody()
+                    .write(
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"事实🙂[1]。\"},\"finish_reason\":null}]}\n\n"
+                            .getBytes(StandardCharsets.UTF_8));
+                e.getResponseBody().flush();
+                answerEntered.countDown();
+                try {
+                  if (blockStream.get())
+                    for (int i = 0; i < 800; i++) {
+                      Thread.sleep(25);
+                      e.getResponseBody().write(":tick\n\n".getBytes(StandardCharsets.UTF_8));
+                      e.getResponseBody().flush();
+                    }
+                  if (!failStream.get())
+                    e.getResponseBody()
+                        .write(
+                            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                                .getBytes(StandardCharsets.UTF_8));
+                } finally {
+                  answerReleased.countDown();
+                }
+                return;
+              }
+              response =
+                  json.writeValueAsString(
+                      Map.of(
+                          "choices",
+                          List.of(
+                              Map.of(
+                                  "finish_reason",
+                                  "stop",
+                                  "message",
+                                  Map.of("role", "assistant", "content", "事实🙂[1]。")))));
             } else {
               keywordCalls.incrementAndGet();
               response =
@@ -749,5 +802,257 @@ class RetrievalIntegrationTest {
     assertEquals(4, result.getRelations().getFirst().getRank());
     assertEquals(3, result.getRelations().get(1).getRank());
     assertEquals(100.0, result.getRelations().get(1).getWeight());
+  }
+
+  QueryRequest answerRequest() {
+    var q = new QueryRequest();
+    q.setQuery("LightRAG 是什么🙂？");
+    q.setMode("naive");
+    q.setRequestId(UUID.randomUUID());
+    return q;
+  }
+
+  UUID readyAnswer() {
+    UUID gen = seed(3, "");
+    indexes.activate(kb, gen, null, "admin");
+    models.bind(Map.of("answer", model("CHAT", "answer-model", 0)), "admin");
+    return gen;
+  }
+
+  @Test
+  void generatedAnswersAndPreviewsShareExactPromptAndDoNotCache() {
+    UUID gen = readyAnswer();
+    var q = answerRequest();
+    q.setPreview("prompt");
+    var preview = answers.query(kb, "admin", q);
+    assertEquals(0, answerCalls.get());
+    assertTrue(
+        preview
+            .getPrompt()
+            .getFirst()
+            .get("content")
+            .contains(preview.getRetrieval().getContext()));
+    q.setPreview("answer");
+    var first = answers.query(kb, "admin", q);
+    var second = answers.query(kb, "admin", q);
+    assertEquals(gen, first.getRetrieval().getGenerationId());
+    assertEquals("事实🙂[1]。", first.getAnswer());
+    assertEquals(List.of("1"), first.getCitedReferenceIds());
+    assertEquals(2, answerCalls.get());
+    assertEquals("disabled", second.getCacheStatus());
+    assertEquals(preview.getRetrieval().getContext(), first.getRetrieval().getContext());
+    var changed = answerRequest();
+    changed.setPreview("context");
+    assertEquals("preview", answers.query(kb, "admin", changed).getStatus());
+    assertThrows(RagAccessException.class, () -> answers.query(kb, "unknown", answerRequest()));
+  }
+
+  @Test
+  void emptyEvidenceDoesNotInvokeAnswerAndMissingRerankIsReported() {
+    UUID gen = readyAnswer();
+    jdbc.update(
+        "UPDATE rag_index_chunk_vector SET embedding='[0,0,1]'::vector WHERE generation_id=?", gen);
+    var q = answerRequest();
+    q.setEnableRerank(true);
+    var result = answers.query(kb, "admin", q);
+    assertEquals("empty", result.getStatus());
+    assertFalse(result.isLlmGenerated());
+    assertEquals("not_configured", result.getRerankStatus());
+    assertEquals(0, answerCalls.get());
+  }
+
+  @Test
+  void rerankRunsBeforeChunkTopKAndRebuildsReferencesWithSafeFailure() {
+    readyAnswer();
+    models.bind(Map.of("rerank", model("RERANK", "rerank-model", 0)), "admin");
+    var q = answerRequest();
+    q.setEnableRerank(true);
+    q.setChunkTopK(1);
+    q.setMode("hybrid");
+    q.setHighLevelKeywords(List.of("knowledge graph"));
+    q.setLowLevelKeywords(List.of("Alice"));
+    var result = answers.query(kb, "admin", q);
+    assertTrue(result.getRetrieval().isReranked());
+    assertEquals(1, result.getRetrieval().getChunks().size());
+    assertEquals("applied", result.getRerankStatus());
+    badRerank.set(true);
+    assertThrows(ModelFailure.class, () -> answers.query(kb, "admin", q));
+    assertEquals(1, answerCalls.get());
+  }
+
+  /** Separate real HTTP cookie jar and CSRF token for one test session. @author agent */
+  record Session(HttpClient client, String csrf) {}
+
+  Session login() throws Exception {
+    var c =
+        HttpClient.newBuilder()
+            .cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL))
+            .build();
+    String csrf = csrf(c);
+    assertEquals(
+        200,
+        c.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/auth/login"))
+                    .header("X-CSRF-TOKEN", csrf)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(HttpRequest.BodyPublishers.ofString("username=admin&password=123456"))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString())
+            .statusCode());
+    return new Session(c, csrf(c));
+  }
+
+  String csrf(HttpClient c) throws Exception {
+    return json.readTree(
+            c.send(
+                    HttpRequest.newBuilder(
+                            URI.create("http://localhost:" + port + "/api/auth/csrf"))
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString())
+                .body())
+        .path("token")
+        .asText();
+  }
+
+  HttpRequest post(Session session, String suffix, Object body) {
+    return HttpRequest.newBuilder(
+            URI.create("http://localhost:" + port + "/api/knowledge-bases/" + kb + suffix))
+        .header("X-CSRF-TOKEN", session.csrf())
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)))
+        .build();
+  }
+
+  @Test
+  void postSseUsesSessionCsrfAndMidStreamFailureIsNeverDone() throws Exception {
+    readyAnswer();
+    var session = login();
+    var q = answerRequest();
+    var response =
+        session
+            .client()
+            .send(post(session, "/query/stream", q), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, response.statusCode());
+    assertTrue(
+        response.headers().firstValue("Content-Type").orElse("").startsWith("text/event-stream"));
+    assertTrue(response.body().contains("event:metadata"));
+    assertTrue(response.body().contains("event:references"));
+    assertTrue(response.body().contains("event:delta"));
+    assertTrue(response.body().contains("event:done"));
+    assertFalse(response.body().contains("event:error"));
+    failStream.set(true);
+    q.setRequestId(UUID.randomUUID());
+    var broken =
+        session
+            .client()
+            .send(post(session, "/query/stream", q), HttpResponse.BodyHandlers.ofString());
+    assertTrue(broken.body().contains("事实🙂"));
+    assertTrue(broken.body().contains("event:error"));
+    assertFalse(broken.body().contains("event:done"));
+    var noCsrf =
+        HttpRequest.newBuilder(
+                URI.create(
+                    "http://localhost:" + port + "/api/knowledge-bases/" + kb + "/query/stream"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(answerRequest())))
+            .build();
+    assertEquals(
+        403, session.client().send(noCsrf, HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(
+        400,
+        session
+            .client()
+            .send(
+                post(session, "/query", Map.of("query", "q", "conversationHistory", List.of())),
+                HttpResponse.BodyHandlers.ofString())
+            .statusCode());
+  }
+
+  @Test
+  void explicitCancelIsSessionScopedAndReleasesTheBlockedProviderWorker() throws Exception {
+    readyAnswer();
+    blockStream.set(true);
+    var owner = login();
+    var other = login();
+    var q = answerRequest();
+    var running =
+        owner
+            .client()
+            .sendAsync(post(owner, "/query/stream", q), HttpResponse.BodyHandlers.ofString());
+    assertTrue(answerEntered.await(5, TimeUnit.SECONDS));
+    assertEquals(
+        204,
+        other
+            .client()
+            .send(
+                post(other, "/query/" + q.getRequestId() + "/cancel", Map.of()),
+                HttpResponse.BodyHandlers.ofString())
+            .statusCode());
+    assertFalse(running.isDone());
+    assertEquals(
+        204,
+        owner
+            .client()
+            .send(
+                post(owner, "/query/" + q.getRequestId() + "/cancel", Map.of()),
+                HttpResponse.BodyHandlers.ofString())
+            .statusCode());
+    assertTrue(answerReleased.await(3, TimeUnit.SECONDS));
+    var cancelled = running.get(5, TimeUnit.SECONDS);
+    assertFalse(cancelled.body().contains("event:done"));
+    blockStream.set(false);
+    assertEquals("success", answers.query(kb, "admin", answerRequest()).getStatus());
+  }
+
+  @Test
+  void closingTheBrowserConnectionReleasesTheProviderWithoutExplicitCancel() throws Exception {
+    readyAnswer();
+    blockStream.set(true);
+    var session = login();
+    var response =
+        session
+            .client()
+            .send(
+                post(session, "/query/stream", answerRequest()),
+                HttpResponse.BodyHandlers.ofInputStream());
+    assertEquals(200, response.statusCode());
+    var reader =
+        new java.io.BufferedReader(
+            new java.io.InputStreamReader(response.body(), StandardCharsets.UTF_8));
+    String line;
+    boolean delta = false;
+    while ((line = reader.readLine()) != null) {
+      if (line.contains("事实🙂")) {
+        delta = true;
+        break;
+      }
+    }
+    assertTrue(delta);
+    response.body().close();
+    assertTrue(
+        answerReleased.await(6, TimeUnit.SECONDS),
+        "Disconnected browser must cancel model transport via heartbeat");
+  }
+
+  @Test
+  void answerAndGenerationVersionsRemainCapturedWhenBindingsAndIndexSwitch() {
+    UUID old = readyAnswer(), oldAnswer = models.snapshot().get("answer");
+    UUID next = seed(4, "NEW ");
+    UUID nextAnswer = model("CHAT", "answer-new", 0);
+    switchIndex.set(
+        () -> {
+          models.bind(Map.of("answer", nextAnswer), "admin");
+          indexes.activate(kb, next, old, "admin");
+        });
+    var result = answers.query(kb, "admin", answerRequest());
+    assertEquals(old, result.getRetrieval().getGenerationId());
+    assertEquals(oldAnswer, result.getAnswerVersion());
+    assertEquals("answer-model", answerModels.getLast());
+    assertEquals("embed3", embeddingModels.getLast());
+    var fresh = answers.query(kb, "admin", answerRequest());
+    assertEquals(next, fresh.getRetrieval().getGenerationId());
+    assertEquals(nextAnswer, fresh.getAnswerVersion());
+    assertEquals("answer-new", answerModels.getLast());
   }
 }

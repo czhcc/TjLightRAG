@@ -16,7 +16,7 @@ const resources = {
       models: {
         title: "模型配置",
         description:
-          "配置文本、向量与重排服务。保存产生新版本；角色绑定只影响新索引，已有索引保持所用版本。",
+          "配置文本、向量与重排服务。保存产生新版本；抽取和向量绑定影响新索引；关键词、回答和重排绑定影响新查询。已有索引保持所用向量版本。",
         forbidden: "只有平台管理员可以管理模型配置",
         failure: "模型操作失败，请检查权限、服务配置和部署密钥",
         masterMissing:
@@ -79,6 +79,33 @@ const resources = {
           cancelled: "已取消",
         },
       },
+      query: {
+        title: "知识库问答",
+        hint: "每次提问独立回答，依据当前索引中的文档生成；可展开证据并回看原文。",
+        question: "问答问题",
+        mode: "问答模式",
+        rerank: "启用重排",
+        generate: "生成回答",
+        stop: "停止生成",
+        previewContext: "预览上下文",
+        previewPrompt: "预览提示词",
+        answer: "回答",
+        failure:
+          "回答未完成，请检查模型配置、权限或连接。已显示的部分内容仅供参考。",
+        unknownCitation: "回答包含未匹配的引用编号，请核对下方依据。",
+        states: {
+          success: "回答已完成",
+          empty: "未找到足够依据",
+          cancelled: "已停止生成，部分回答尚未完成",
+          preview: "预览已完成，未调用回答模型",
+        },
+        rerankStates: {
+          disabled: "未启用重排",
+          not_configured: "未配置重排模型，保留原顺序",
+          no_candidates: "没有可重排的文本块",
+          applied: "已使用重排模型筛选证据",
+        },
+      },
       retrieval: {
         title: "检索证据",
         hint: "检索当前已激活索引，返回图谱、文本块及来源；本阶段不生成回答，也不执行重排。",
@@ -139,7 +166,7 @@ const resources = {
         createBase: "创建知识库",
         selectBase: "请选择或创建知识库",
         preprocessingOnly:
-          "文档分块后构建并激活索引，即可检索图谱与来源；回答生成尚未开放",
+          "文档分块后构建并激活索引，再配置回答模型，即可提问并回看依据",
         refresh: "刷新",
         readOnly: "当前为只读权限",
         paste: "粘贴文本",
@@ -227,7 +254,7 @@ const resources = {
       models: {
         title: "Model settings",
         description:
-          "Configure chat, embedding and reranking services. Saves create immutable versions; bindings affect new indexes only.",
+          "Configure chat, embedding and reranking services. Saves create immutable versions; extraction/embedding bindings affect new indexes, while keyword/answer/rerank bindings affect new queries.",
         forbidden: "Model settings require a platform administrator",
         failure:
           "Model operation failed. Check permissions, endpoint settings and deployment keys.",
@@ -295,6 +322,35 @@ const resources = {
           ready: "Ready to activate",
           failed: "Failed",
           cancelled: "Cancelled",
+        },
+      },
+      query: {
+        title: "Knowledge base Q&A",
+        hint: "Each question is answered independently using the current index. Expand evidence to view original sources.",
+        question: "Question",
+        mode: "Answer mode",
+        rerank: "Enable reranking",
+        generate: "Generate answer",
+        stop: "Stop generation",
+        previewContext: "Preview context",
+        previewPrompt: "Preview prompt",
+        answer: "Answer",
+        failure:
+          "The answer did not complete. Check model settings, permissions or connection. Partial output is unverified.",
+        unknownCitation:
+          "Some citation IDs do not match the evidence. Check the sources below.",
+        states: {
+          success: "Answer complete",
+          empty: "Insufficient evidence",
+          cancelled: "Generation stopped; partial answer is incomplete",
+          preview: "Preview complete; answer model was not called",
+        },
+        rerankStates: {
+          disabled: "Reranking disabled",
+          not_configured:
+            "No reranking model configured; original order retained",
+          no_candidates: "No chunks to rerank",
+          applied: "Evidence selected with reranking",
         },
       },
       retrieval: {
@@ -369,7 +425,7 @@ const resources = {
         createBase: "Create knowledge base",
         selectBase: "Select or create a knowledge base",
         preprocessingOnly:
-          "Document parsing and chunking only; no RAG index has been generated.",
+          "Build and activate an index after parsing, then configure an answer model to ask questions and inspect sources.",
         refresh: "Refresh",
         readOnly: "You have read-only access.",
         paste: "Paste text",

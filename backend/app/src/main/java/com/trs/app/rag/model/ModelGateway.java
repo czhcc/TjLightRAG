@@ -85,6 +85,43 @@ public class ModelGateway {
     return chatModel(v).call(new Prompt(list)).getResult().getOutput().getText();
   }
 
+  /** Creates a cancellable Spring AI streaming adapter for the captured version. @author agent */
+  public StreamingChatModel streamingChatModel(ModelVersion v) {
+    return prompt -> ModelStream.open(v, prompt, vault, policy, client);
+  }
+
+  /** Streams actual provider deltas; interruption disposes the HTTP subscription. @author agent */
+  public void stream(
+      ModelVersion v,
+      List<Map<String, String>> messages,
+      java.util.function.Consumer<String> delta) {
+    if (!v.getKind().equals("CHAT")) throw new IllegalArgumentException();
+    int tokens =
+        messages.stream().mapToInt(m -> tokenizer.encode(m.get("content")).length + 8).sum() + 16;
+    if (tokens + v.getMaxOutputTokens() > v.getContextTokens())
+      throw new ModelFailure("model_context_exceeded");
+    List<Message> list =
+        messages.stream()
+            .<Message>map(
+                m ->
+                    switch (m.get("role")) {
+                      case "system" -> new SystemMessage(m.get("content"));
+                      case "assistant" -> new AssistantMessage(m.get("content"));
+                      default -> new UserMessage(m.get("content"));
+                    })
+            .toList();
+    try {
+      streamingChatModel(v).stream(new Prompt(list))
+          .doOnNext(response -> delta.accept(response.getResult().getOutput().getText()))
+          .blockLast();
+    } catch (ModelFailure failure) {
+      throw failure;
+    } catch (RuntimeException failure) {
+      if (Thread.currentThread().isInterrupted()) throw new ModelFailure("model_interrupted");
+      throw new ModelFailure("model_stream_unavailable");
+    }
+  }
+
   /** Creates a version-scoped Spring AI EmbeddingModel. @author agent */
   public EmbeddingModel embeddingModel(ModelVersion v) {
     return new EmbeddingModel() {
@@ -161,11 +198,11 @@ public class ModelGateway {
   }
 
   /**
-   * Validates an optional compatible rerank endpoint without pretending to use it for retrieval
-   * yet. @author agent
+   * Calls a bounded compatible rerank endpoint with strict index and score validation. @author
+   * agent
    */
   public List<Map<String, Object>> rerank(ModelVersion v, String query, List<String> documents) {
-    if (!v.getKind().equals("RERANK") || documents.isEmpty() || documents.size() > 100)
+    if (!v.getKind().equals("RERANK") || documents.isEmpty() || documents.size() > 500)
       throw new IllegalArgumentException();
     var response =
         post(
@@ -186,8 +223,11 @@ public class ModelGateway {
     Set<Integer> seen = new HashSet<>();
     List<Map<String, Object>> rows = new ArrayList<>();
     for (var r : results) {
-      int index = r.path("index").asInt(-1);
-      double score = r.path("relevance_score").asDouble(Double.NaN);
+      int index = r.path("index").isIntegralNumber() ? r.path("index").asInt(-1) : -1;
+      double score =
+          r.path("relevance_score").isNumber()
+              ? r.path("relevance_score").asDouble(Double.NaN)
+              : Double.NaN;
       if (index < 0 || index >= documents.size() || !seen.add(index) || !Double.isFinite(score))
         throw new ModelFailure("rerank_invalid");
       rows.add(Map.of("index", index, "score", score));

@@ -26,3 +26,7 @@ The extraction/gleaning/summary templates in backend/app/src/main/resources/rag/
 ## Stage 4 retrieval
 
 The keyword/context/response templates in backend/app/src/main/resources/rag/retrieval and the adapted retrieval, polling, truncation and reference algorithms in app.rag.retrieval derive from the pinned LightRAG commit above. The upstream MIT copyright/license and the recorded PROVENANCE.json accompany these materials.
+
+## Stage 5 answering and reranking
+
+Answer generation/preview reuses the pinned LightRAG response template above. The chunk reranking/filtering/order in app.rag.query adapts utils.py apply_rerank_if_enabled and process_chunks_unified; the fixed upstream reranking fixture is compared with production Java. Strict failures, disabled answer caching and the session-scoped POST SSE/cancellation protocol are documented project adaptations. The same LightRAG MIT notice and license remain applicable.

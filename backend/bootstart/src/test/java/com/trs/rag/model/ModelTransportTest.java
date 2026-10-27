@@ -88,4 +88,52 @@ class ModelTransportTest {
       server.stop(0);
     }
   }
+
+  @Test
+  void rerankProtocolRejectsCoercedAndOverflowingIndicesAndInvalidScores() throws Exception {
+    var payload = new java.util.concurrent.atomic.AtomicReference<String>();
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/v1/rerank",
+        e -> {
+          try {
+            e.getRequestBody().readAllBytes();
+            byte[] bytes = payload.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            e.sendResponseHeaders(200, bytes.length);
+            e.getResponseBody().write(bytes);
+          } finally {
+            e.close();
+          }
+        });
+    server.start();
+    try {
+      var gateway =
+          new ModelGateway(
+              new SecretVault(""), new EndpointPolicy("127.0.0.1", true), mock(RagTokenizer.class));
+      var version =
+          new ModelVersion(
+              UUID.randomUUID(),
+              UUID.randomUUID(),
+              "RERANK",
+              "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+              "test",
+              "",
+              0,
+              16000,
+              100,
+              2);
+      for (String index : List.of("0.5", "\"0\"", "4294967296", "true", "-1", "2")) {
+        payload.set("{\"results\":[{\"index\":" + index + ",\"relevance_score\":0.9}]}");
+        assertThrows(
+            ModelFailure.class, () -> gateway.rerank(version, "q", List.of("document")), index);
+      }
+      for (String score : List.of("\"0.9\"", "true", "1e999", "null")) {
+        payload.set("{\"results\":[{\"index\":0,\"relevance_score\":" + score + "}]}");
+        assertThrows(
+            ModelFailure.class, () -> gateway.rerank(version, "q", List.of("document")), score);
+      }
+    } finally {
+      server.stop(0);
+    }
+  }
 }
