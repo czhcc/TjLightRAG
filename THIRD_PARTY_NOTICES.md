@@ -22,3 +22,7 @@ The runtime image includes these notices in /app/licenses and /app/THIRD_PARTY_N
 ## Stage 3 extraction and graph merge
 
 The extraction/gleaning/summary templates in backend/app/src/main/resources/rag/prompts and the adapted parsing/normalization/merge code in app.rag.index derive from the pinned LightRAG commit above. PROVENANCE.json records the original prompt source hash; the upstream MIT copyright and license in third_party/LightRAG/LICENSE apply to these materials.
+
+## Stage 4 retrieval
+
+The keyword/context/response templates in backend/app/src/main/resources/rag/retrieval and the adapted retrieval, polling, truncation and reference algorithms in app.rag.retrieval derive from the pinned LightRAG commit above. The upstream MIT copyright/license and the recorded PROVENANCE.json accompany these materials.

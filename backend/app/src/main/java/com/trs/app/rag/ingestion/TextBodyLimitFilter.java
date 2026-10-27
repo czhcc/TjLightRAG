@@ -17,9 +17,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(0)
 public class TextBodyLimitFilter extends OncePerRequestFilter {
   public static final int LIMIT = 6 * 1024 * 1024;
+  public static final int RETRIEVAL_LIMIT = 256 * 1024;
 
   /**
-   * Buffers only the bounded text endpoint; multipart remains streaming under Spring's own cap.
+   * Buffers bounded text/query endpoints; multipart remains streaming under Spring's own cap.
    *
    * @author agent
    */
@@ -27,32 +28,33 @@ public class TextBodyLimitFilter extends OncePerRequestFilter {
   protected void doFilterInternal(
       HttpServletRequest request, HttpServletResponse response, FilterChain chain)
       throws ServletException, IOException {
-    if (!request
-            .getRequestURI()
-            .substring(request.getContextPath().length())
-            .startsWith("/api/knowledge-bases/")
+    String path = request.getRequestURI().substring(request.getContextPath().length());
+    boolean retrieval = path.endsWith("/retrieval");
+    if (!path.startsWith("/api/knowledge-bases/")
         || !request.getMethod().equals("POST")
-        || !request.getRequestURI().endsWith("/documents/text")) {
+        || !(retrieval || path.endsWith("/documents/text"))) {
       chain.doFilter(request, response);
       return;
     }
-    if (request.getContentLengthLong() > LIMIT) {
-      tooLarge(response);
+    int limit = retrieval ? RETRIEVAL_LIMIT : LIMIT;
+    String code = retrieval ? "retrieval_request_too_large" : "document_too_large";
+    if (request.getContentLengthLong() > limit) {
+      tooLarge(response, code);
       return;
     }
-    byte[] bytes = request.getInputStream().readNBytes(LIMIT + 1);
-    if (bytes.length > LIMIT) {
-      tooLarge(response);
+    byte[] bytes = request.getInputStream().readNBytes(limit + 1);
+    if (bytes.length > limit) {
+      tooLarge(response, code);
       return;
     }
     chain.doFilter(new BufferedRequest(request, bytes), response);
   }
 
-  private void tooLarge(HttpServletResponse response) throws IOException {
+  private void tooLarge(HttpServletResponse response, String code) throws IOException {
     response.setStatus(413);
     response.setContentType("application/json");
     response.setCharacterEncoding("UTF-8");
-    response.getWriter().write("{\"error\":\"document_too_large\"}");
+    response.getWriter().write("{\"error\":\"" + code + "\"}");
   }
 
   /**

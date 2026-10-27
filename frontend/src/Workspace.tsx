@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import IndexPanel from "./IndexPanel";
+import RetrievalPanel from "./RetrievalPanel";
 import { ApiError, mutate, request, text as fetchText } from "./api";
 
 type Base = {
@@ -394,6 +395,11 @@ export default function Workspace({
                 {t("workspace.readOnly")}
               </p>
             )}
+            <RetrievalPanel
+              key={"retrieval-" + selectedId}
+              kb={selectedId}
+              onSessionExpired={onSessionExpired}
+            />
             <IndexPanel
               key={selectedId}
               kb={selectedId}

@@ -96,7 +96,7 @@ class MigrationIntegrationTest {
   @Test
   void emptyDatabaseMigratesAndRepeatIsNoOp() {
     String schema = "fresh_" + UUID.randomUUID().toString().replace("-", "");
-    assertEquals(5, flyway(schema, null, 3).migrate().migrationsExecuted);
+    assertEquals(6, flyway(schema, null, 3).migrate().migrationsExecuted);
     assertEquals(0, flyway(schema, null, 3).migrate().migrationsExecuted);
     assertThrows(
         org.flywaydb.core.api.FlywayException.class, () -> flyway(schema, null, 4).migrate());
@@ -127,7 +127,7 @@ class MigrationIntegrationTest {
       s.execute(
           "INSERT INTO app_user (username,password_hash) VALUES ('existing-user','untouched')");
     }
-    assertEquals(4, flyway(schema, null, 3).migrate().migrationsExecuted);
+    assertEquals(5, flyway(schema, null, 3).migrate().migrationsExecuted);
     try (var c = DriverManager.getConnection(url(), "migration", "test-only");
         var s = c.createStatement()) {
       s.execute("SET search_path TO " + schema + ",public");

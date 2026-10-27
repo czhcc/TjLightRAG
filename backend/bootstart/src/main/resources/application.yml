@@ -28,3 +28,6 @@ rag:
     master-key: ${RAG_MODEL_MASTER_KEY:}
     allowed-hosts: ${RAG_MODEL_ALLOWED_HOSTS:}
     allow-http: ${RAG_MODEL_ALLOW_HTTP:false}
+  retrieval:
+    max-concurrency: ${RAG_RETRIEVAL_MAX_CONCURRENCY:4}
+    timeout-seconds: ${RAG_RETRIEVAL_TIMEOUT_SECONDS:120}

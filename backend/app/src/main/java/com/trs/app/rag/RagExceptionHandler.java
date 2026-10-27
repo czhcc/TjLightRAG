@@ -12,6 +12,27 @@ import org.springframework.web.bind.annotation.*;
  */
 @RestControllerAdvice(basePackages = "com.trs.app.rag")
 public class RagExceptionHandler {
+  /**
+   * Rejects invalid bodies without default logging of rejected private document/query
+   * fields. @author agent
+   */
+  @ExceptionHandler({
+    org.springframework.web.bind.MethodArgumentNotValidException.class,
+    org.springframework.http.converter.HttpMessageNotReadableException.class
+  })
+  public ResponseEntity<Map<String, String>> body(Exception failure) {
+    return ResponseEntity.badRequest().body(Map.of("error", "Invalid request"));
+  }
+
+  /**
+   * Reports retrieval failures without exposing the query, SQL or provider payload. @author agent
+   */
+  @ExceptionHandler(com.trs.app.rag.retrieval.RetrievalFailure.class)
+  public ResponseEntity<Map<String, String>> retrieval(
+      com.trs.app.rag.retrieval.RetrievalFailure failure) {
+    return ResponseEntity.status(failure.getStatus()).body(Map.of("error", failure.getCode()));
+  }
+
   /** Returns a sanitized model failure without provider data. @author agent */
   @ExceptionHandler(com.trs.app.rag.model.ModelFailure.class)
   public ResponseEntity<Map<String, String>> model(com.trs.app.rag.model.ModelFailure error) {

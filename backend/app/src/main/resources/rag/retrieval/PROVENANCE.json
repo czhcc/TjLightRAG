@@ -1,0 +1,13 @@
+{
+  "upstream": "HKUDS/LightRAG",
+  "commit": "aaebfe1bb8d55deb6a4304d357a3bf4c92fcd40a",
+  "file": "lightrag/prompt.py",
+  "sha256": "db0cf2d0f5d420a8372fac2b33043d8b4f14c84ec0a60653862e4e53a27047e1",
+  "version": "lightrag-aaebfe1-retrieval-v1",
+  "keys": [
+    "keywords_extraction",
+    "keywords_extraction_examples",
+    "kg_query_context",
+    "rag_response"
+  ]
+}

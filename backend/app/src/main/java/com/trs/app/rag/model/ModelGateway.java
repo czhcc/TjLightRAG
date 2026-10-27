@@ -149,6 +149,18 @@ public class ModelGateway {
   }
 
   /**
+   * Embeds only the texts used by one query in a single validated Spring AI request. @author agent
+   */
+  public List<float[]> embedBatch(ModelVersion version, List<String> texts) {
+    if (!version.getKind().equals("EMBEDDING") || texts.isEmpty() || texts.size() > 16)
+      throw new IllegalArgumentException();
+    for (String text : texts)
+      if (tokenizer.encode(text).length > version.getContextTokens())
+        throw new ModelFailure("embedding_context_exceeded");
+    return embeddingModel(version).embed(texts);
+  }
+
+  /**
    * Validates an optional compatible rerank endpoint without pretending to use it for retrieval
    * yet. @author agent
    */
