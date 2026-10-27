@@ -1,6 +1,8 @@
 services:
   db:
     image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:9d9c930220cb9bf2f956d10a8f909cf9973d9672ca0278aef2c1e6facccad2e0
+    entrypoint: ["bash", "/opt/tjlightrag-db-start.sh"]
+    command: ["postgres"]
     environment:
       POSTGRES_DB: tjlightrag
       POSTGRES_USER: tjlightrag
@@ -8,7 +10,8 @@ services:
       APP_DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql
-      - ./init:/docker-entrypoint-initdb.d:ro
+      - ./init:/opt/tjlightrag-init:ro
+      - ./db-entrypoint.sh:/opt/tjlightrag-db-start.sh:ro
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U tjlightrag -d tjlightrag"]
       interval: 5s
@@ -23,6 +26,9 @@ services:
       - "8080:8080"
     environment:
       SPRING_PROFILES_ACTIVE: prod
+      RAG_MODEL_MASTER_KEY: ${RAG_MODEL_MASTER_KEY:-}
+      RAG_MODEL_ALLOWED_HOSTS: ${RAG_MODEL_ALLOWED_HOSTS:-}
+      RAG_MODEL_ALLOW_HTTP: ${RAG_MODEL_ALLOW_HTTP:-false}
       DB_URL: jdbc:postgresql://db:5432/tjlightrag
       DB_USERNAME: tjlightrag_app
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}

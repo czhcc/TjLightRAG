@@ -28,8 +28,20 @@ class MigrationIntegrationTest {
           .withEnv("POSTGRES_PASSWORD", "test-only")
           .withEnv("APP_DB_PASSWORD", "runtime-only")
           .withCopyFileToContainer(
-              MountableFile.forHostPath(bootstrapScript(), 0755),
-              "/docker-entrypoint-initdb.d/01-runtime-user.sh")
+              MountableFile.forHostPath(bootstrapScript(), 0700),
+              "/opt/tjlightrag-init/01-runtime-user.sh")
+          .withCopyFileToContainer(
+              MountableFile.forHostPath(
+                  Path.of(bootstrapScript())
+                      .getParent()
+                      .getParent()
+                      .resolve("db-entrypoint.sh")
+                      .toString(),
+                  0700),
+              "/opt/tjlightrag-db-start.sh")
+          .withCreateContainerCmdModifier(
+              command -> command.withEntrypoint("bash", "/opt/tjlightrag-db-start.sh"))
+          .withCommand("postgres")
           .withExposedPorts(5432)
           .waitingFor(
               Wait.forLogMessage(".*database system is ready to accept connections.*\n", 2));
@@ -84,7 +96,7 @@ class MigrationIntegrationTest {
   @Test
   void emptyDatabaseMigratesAndRepeatIsNoOp() {
     String schema = "fresh_" + UUID.randomUUID().toString().replace("-", "");
-    assertEquals(2, flyway(schema, null, 3).migrate().migrationsExecuted);
+    assertEquals(5, flyway(schema, null, 3).migrate().migrationsExecuted);
     assertEquals(0, flyway(schema, null, 3).migrate().migrationsExecuted);
     assertThrows(
         org.flywaydb.core.api.FlywayException.class, () -> flyway(schema, null, 4).migrate());
@@ -115,7 +127,7 @@ class MigrationIntegrationTest {
       s.execute(
           "INSERT INTO app_user (username,password_hash) VALUES ('existing-user','untouched')");
     }
-    assertEquals(1, flyway(schema, null, 3).migrate().migrationsExecuted);
+    assertEquals(4, flyway(schema, null, 3).migrate().migrationsExecuted);
     try (var c = DriverManager.getConnection(url(), "migration", "test-only");
         var s = c.createStatement()) {
       s.execute("SET search_path TO " + schema + ",public");

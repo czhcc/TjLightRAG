@@ -38,6 +38,8 @@
 
 ## tokenizer 限制
 
+**阶段 2 更新：** 已取得 Maven 发布的原始 cl100k_base 词表，SHA-256 与官方一致，并新增独立真实 BPE 对照；见 [STAGE_2.md](STAGE_2.md)。以下记录是阶段 0 当时的限制，原受控语料不被覆盖。
+
 本次环境访问 `openaipublic.blob.core.windows.net` 下载 cl100k_base 词表返回代理 403。未关闭 TLS 或改写词表校验值。语料使用上游允许注入的 `Tokenizer` 接口，测试 tokenizer 标识为 `unicode-codepoint-test-v1`：一个 Unicode 码点为一个受控 token，类似上游测试中的 DummyTokenizer。
 
 这是一种显式测试模型，不是对生产 token 数的估算策略，也不代表 cl100k_base/BPE 已验证。阶段 2 实现前须选择实际模型 tokenizer，取得可信词表并保留校验和，新增真实 BPE 语料组；不能覆盖或重命名这组受控语料来掩盖差异。Java 字符串使用 UTF-16，原文位置核对需转换码点偏移，emoji 用例已覆盖。

@@ -20,6 +20,7 @@ public class KnowledgeBaseService {
   private final KnowledgeBaseRepository bases;
   private final MembershipRepository members;
   private final UserRepository users;
+  private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
   /**
    * Creates a base and owner membership atomically.
@@ -105,6 +106,7 @@ public class KnowledgeBaseService {
    * @author agent
    */
   public void delete(UUID id, String username) {
+    jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", "rag-kb:" + id);
     owner(id, username);
     bases.deleteById(id);
   }
@@ -169,6 +171,7 @@ public class KnowledgeBaseService {
    * @author agent
    */
   public KnowledgeRole requireAccess(UUID id, String username, boolean write) {
+    jdbc.queryForList("SELECT pg_advisory_xact_lock_shared(hashtextextended(?,0))", "rag-kb:" + id);
     var member =
         members
             .findByKnowledgeBase_IdAndUser_Username(id, username)

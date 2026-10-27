@@ -12,6 +12,13 @@ import org.springframework.web.bind.annotation.*;
  */
 @RestControllerAdvice(basePackages = "com.trs.app.rag")
 public class RagExceptionHandler {
+  /** Returns a sanitized model failure without provider data. @author agent */
+  @ExceptionHandler(com.trs.app.rag.model.ModelFailure.class)
+  public ResponseEntity<Map<String, String>> model(com.trs.app.rag.model.ModelFailure error) {
+    return ResponseEntity.status(error.getCode().equals("master_key_missing") ? 409 : 502)
+        .body(Map.of("error", error.getCode()));
+  }
+
   /**
    * Returns a non-disclosing access error.
    *
@@ -46,5 +53,18 @@ public class RagExceptionHandler {
   @ExceptionHandler(DataIntegrityViolationException.class)
   public ResponseEntity<Map<String, String>> conflict(DataIntegrityViolationException error) {
     return ResponseEntity.status(409).body(Map.of("error", "Conflicting data"));
+  }
+
+  /**
+   * Rejects files beyond the bounded multipart limit.
+   *
+   * @param error oversized multipart input
+   * @return payload-too-large response
+   * @author agent
+   */
+  @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+  public ResponseEntity<Map<String, String>> uploadLimit(
+      org.springframework.web.multipart.MaxUploadSizeExceededException error) {
+    return ResponseEntity.status(413).body(Map.of("error", "document_too_large"));
   }
 }

@@ -20,6 +20,8 @@ RUN --mount=type=secret,id=maven_settings --mount=type=secret,id=java_cacerts \
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 COPY --from=backend /build/backend/bootstart/target/bootstart-0.0.1-SNAPSHOT.jar app.jar
+COPY --chown=10001:0 third_party/ /app/licenses/
+COPY --chown=10001:0 THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
 USER 10001
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

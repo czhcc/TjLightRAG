@@ -1,6 +1,8 @@
 services:
   db:
     image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:9d9c930220cb9bf2f956d10a8f909cf9973d9672ca0278aef2c1e6facccad2e0
+    entrypoint: ["bash", "/opt/tjlightrag-db-start.sh"]
+    command: ["postgres"]
     ports:
       - "127.0.0.1:5432:5432"
     environment:
@@ -10,7 +12,8 @@ services:
       APP_DB_PASSWORD: tjlightrag-app
     volumes:
       - pgdev:/var/lib/postgresql
-      - ./init:/docker-entrypoint-initdb.d:ro
+      - ./init:/opt/tjlightrag-init:ro
+      - ./db-entrypoint.sh:/opt/tjlightrag-db-start.sh:ro
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U tjlightrag -d tjlightrag"]
       interval: 3s
