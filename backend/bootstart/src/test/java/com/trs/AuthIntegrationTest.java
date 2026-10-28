@@ -31,17 +31,24 @@ class AuthIntegrationTest {
       org.springframework.test.context.DynamicPropertyRegistry properties) {
     String url =
         "jdbc:postgresql://" + DB.getHost() + ":" + DB.getMappedPort(5432) + "/authentication";
-    for (String key : java.util.List.of("spring.datasource.url", "spring.flyway.url"))
-      properties.add(key, () -> url);
-    for (String key : java.util.List.of("spring.datasource.username", "spring.flyway.user"))
-      properties.add(key, () -> "authentication");
-    for (String key : java.util.List.of("spring.datasource.password", "spring.flyway.password"))
-      properties.add(key, () -> "test-only");
+    properties.add("spring.datasource.url", () -> url);
+    properties.add("spring.datasource.username", () -> "authentication");
+    properties.add("spring.datasource.password", () -> "test-only");
     properties.add("rag.vector.dimensions", () -> "3");
     properties.add("rag.vector.model", () -> "fixture-3d");
   }
 
   @LocalServerPort int port;
+
+  @org.springframework.beans.factory.annotation.Autowired javax.sql.DataSource dataSource;
+
+  @org.springframework.beans.factory.annotation.Autowired org.flywaydb.core.Flyway flyway;
+
+  @Test
+  void migrationsReuseApplicationDataSource() {
+    assertSame(dataSource, flyway.getConfiguration().getDataSource());
+    assertTrue(flyway.info().applied().length > 0);
+  }
 
   @Test
   void loginAndLogout() throws Exception {

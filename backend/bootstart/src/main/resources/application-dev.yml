@@ -1,12 +1,8 @@
 spring:
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/tjlightrag}
-    username: ${DB_USERNAME:tjlightrag_app}
-    password: ${DB_PASSWORD:tjlightrag-app}
-  flyway:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/tjlightrag}
-    user: ${DB_MIGRATION_USERNAME:tjlightrag}
-    password: ${DB_MIGRATION_PASSWORD:tjlightrag}
+    username: ${DB_USERNAME:tjlightrag}
+    password: ${DB_PASSWORD:tjlightrag}
 rag:
   vector:
     # Explicit fixture space only. Set the real model and dimension before creating a real index.

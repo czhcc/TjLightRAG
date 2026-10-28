@@ -64,7 +64,9 @@ JPA 管理 `KnowledgeBase` 和 `KnowledgeBaseMember`。`RagObjectStore` 使用�
 
 pgvector 扩展须由 DBA 预装，或由具备扩展安装权限的迁移账户创建；不将该权限授予运行账户。
 
-应用数据源使用受限运行账户 `tjlightrag_app`；Flyway 使用独立的迁移账户。`afterMigrate.sql` 仅在运行角色已存在时授予当前 schema 的 DML、sequence 使用权限；不授予 CREATE/DROP，不允许修改迁移历史和模型空间元数据。
+当前配置已简化为单一 datasource：应用和 Flyway 共用 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`，账号需具有迁移权限。以下双账号配置及验证记录为阶段 1 的历史设计。旧运行角色初始化脚本和授权回调保留兼容用途，当前 Compose 不再创建独立运行账号。
+
+阶段 1 原设计：应用数据源使用受限运行账户 `tjlightrag_app`；Flyway 使用独立的迁移账户。`afterMigrate.sql` 仅在运行角色已存在时授予当前 schema 的 DML、sequence 使用权限；不授予 CREATE/DROP，不允许修改迁移历史和模型空间元数据。
 
 新库由 `docker/init/01-runtime-user.sh` 创建运行角色，密码通过 psql 字面量引用转义，不在 SQL 源码拼接或日志输出。初始化脚本只在空数据目录自动执行，不改写已有角色密码。
 

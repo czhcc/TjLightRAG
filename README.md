@@ -30,8 +30,8 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-前端 Vite 将 /api 代理至服务端 8080。默认 dev profile 连接 localhost:5432/tjlightrag；运行账户为 tjlightrag_app / tjlightrag-app，Flyway 迁移账户为 tjlightrag / tjlightrag。
-可使用 DB_URL、DB_USERNAME、DB_PASSWORD 和独立的 DB_MIGRATION_USERNAME、DB_MIGRATION_PASSWORD 覆盖。JPA 只验证结构，Flyway 执行增量迁移。开发向量空间为明确的 fixture-3d / 3 维；生产必须显式配置历史固定空间标识与维度（新部署可用 legacy-bootstrap / 3）。本阶段实际模型在管理员配置页选择，与历史空间区分，切换实际模型不修改历史空间参数。已有数据卷的运行角色初始化见 docs/migration/STAGE_1.md。
+前端 Vite 将 /api 代理至服务端 8080。默认 dev profile 连接 localhost:5432/tjlightrag；数据库账户为 tjlightrag / tjlightrag，Flyway 复用应用 datasource。
+只需通过 DB_URL、DB_USERNAME、DB_PASSWORD 配置数据库连接，账号需具备业务读写和数据库迁移权限。JPA 只验证结构，Flyway 执行增量迁移。开发向量空间为明确的 fixture-3d / 3 维；生产必须显式配置历史固定空间标识与维度（新部署可用 legacy-bootstrap / 3）。本阶段实际模型在管理员配置页选择，与历史空间区分，切换实际模型不修改历史空间参数。已有 Compose 数据卷不会自动修改数据库账号密码；DB_PASSWORD 应使用原迁移账号 tjlightrag 的密码（或先在数据库中修改该账号密码）。
 
 默认登录：admin / 123456。密码使用 BCrypt 存储；生产部署前应更换默认管理员密码。
 认证使用 HttpOnly、SameSite=Lax 会话 Cookie；写请求先 GET /api/auth/csrf，使用 X-CSRF-TOKEN 请求头。
@@ -61,7 +61,7 @@ docker compose --env-file docker/.env -f docker/compose.yml up -d --build
 ```
 
 前端构建产物嵌入 Spring Boot static 资源，同一镜像同源提供网页和 REST。
-prod profile 必须设置运行/迁移两套数据库凭据、RAG_EMBEDDING_MODEL、RAG_VECTOR_DIMENSIONS；默认 secure cookie，部署在可信 HTTPS 反向代理后。
+prod profile 必须设置 DB_URL、DB_USERNAME、DB_PASSWORD、RAG_EMBEDDING_MODEL、RAG_VECTOR_DIMENSIONS；默认 secure cookie，部署在可信 HTTPS 反向代理后。Compose 已提供 DB_URL 和 DB_USERNAME，只需配置 DB_PASSWORD。
 仅本地 HTTP 验证时设置 COOKIE_SECURE=false。不要将该覆盖用于公网生产环境。
 镜像导出：`docker save tjlightrag:local -o docker/images/tjlightrag.tar`；镜像归档不提交到 Git。
 会话保存在内存，服务重启需要重新登录。已提供知识库及成员权限、三类向量原始存储、TXT/Markdown 导入、持久化任务及真实 BPE 分块。已接入模型配置、实体关系抽取、embedding 生成和索引构建/原子切换；已提供 naive/local/global/hybrid/mix 检索及历史来源定位，已开放单轮问答、流式取消和提示词预览。“已分块”只表示文档预处理完成；请另行构建并激活索引。详见 docs/migration/STAGE_2.md 和 docs/migration/STAGE_3.md。
