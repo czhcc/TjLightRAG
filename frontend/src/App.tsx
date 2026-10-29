@@ -2,11 +2,9 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import "./i18n";
 import Workspace from "./Workspace";
-import Models from "./Models";
 export default function App() {
   const { t, i18n } = useTranslation();
-  const [admin, setAdmin] = useState(false),
-    [page, setPage] = useState("workspace");
+  const [admin, setAdmin] = useState(false);
   const [authenticated, setAuthenticated] = useState(false),
     [loading, setLoading] = useState(true),
     [busy, setBusy] = useState(false);
@@ -55,7 +53,6 @@ export default function App() {
         return;
       }
       setAuthenticated(!authenticated);
-      setPage("workspace");
       setAdmin(false);
       if (!authenticated) {
         const me = await fetch("/api/auth/me");
@@ -81,18 +78,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="flex h-18 items-center justify-between bg-slate-950 px-8 text-white">
         <span className="text-lg font-semibold tracking-wide">TjLightRAG</span>
-        <nav className="flex gap-6">
-          {authenticated && admin && (
-            <button
-              onClick={() =>
-                setPage(page === "models" ? "workspace" : "models")
-              }
-            >
-              {t(
-                page === "models" ? "workspace.knowledgeBases" : "models.title",
-              )}
-            </button>
-          )}
+        <nav aria-label={t("navigation.account")} className="flex gap-6">
           <button onClick={language}>
             {i18n.language === "zh" ? "English" : "中文"}
           </button>
@@ -144,11 +130,7 @@ export default function App() {
         </main>
       ) : (
         <main aria-label="Workspace">
-          {page === "models" && admin ? (
-            <Models onSessionExpired={sessionExpired} />
-          ) : (
-            <Workspace onSessionExpired={sessionExpired} />
-          )}
+          <Workspace admin={admin} onSessionExpired={sessionExpired} />
         </main>
       )}
       {authenticated && error && (

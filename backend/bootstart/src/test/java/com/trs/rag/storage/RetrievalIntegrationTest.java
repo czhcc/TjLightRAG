@@ -38,8 +38,6 @@ import tools.jackson.databind.json.JsonMapper;
       "rag.ingestion.enabled=false",
       "rag.indexing.enabled=false",
       "rag.models.master-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-      "rag.models.allowed-hosts=127.0.0.1",
-      "rag.models.allow-http=true",
       "rag.retrieval.max-concurrency=2"
     })
 class RetrievalIntegrationTest {
@@ -153,7 +151,7 @@ class RetrievalIntegrationTest {
                 e.sendResponseHeaders(200, 0);
                 e.getResponseBody()
                     .write(
-                        "data: {\"choices\":[{\"delta\":{\"content\":\"事实🙂[1]。\"},\"finish_reason\":null}]}\n\n"
+                        com.trs.rag.model.OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{\"content\":\"事实🙂[1]。\"},\"finish_reason\":null}]}\n\n")
                             .getBytes(StandardCharsets.UTF_8));
                 e.getResponseBody().flush();
                 answerEntered.countDown();
@@ -167,7 +165,7 @@ class RetrievalIntegrationTest {
                   if (!failStream.get())
                     e.getResponseBody()
                         .write(
-                            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                            com.trs.rag.model.OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
                                 .getBytes(StandardCharsets.UTF_8));
                 } finally {
                   answerReleased.countDown();
@@ -202,7 +200,7 @@ class RetrievalIntegrationTest {
                                       "{\"high_level_keywords\":[\"knowledge"
                                           + " graph\"],\"low_level_keywords\":[\"Alice\"]}")))));
             }
-            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+            byte[] bytes = com.trs.rag.model.OpenAiFixtures.json(response).getBytes(StandardCharsets.UTF_8);
             e.getResponseHeaders().set("Content-Type", "application/json");
             e.sendResponseHeaders(200, bytes.length);
             e.getResponseBody().write(bytes);

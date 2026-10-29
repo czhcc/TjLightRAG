@@ -30,9 +30,7 @@ import tools.jackson.databind.json.JsonMapper;
     properties = {
       "rag.ingestion.enabled=false",
       "rag.indexing.enabled=false",
-      "rag.models.master-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-      "rag.models.allowed-hosts=127.0.0.1",
-      "rag.models.allow-http=true"
+      "rag.models.master-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     })
 class ModelIndexIntegrationTest {
   @Container
@@ -150,7 +148,7 @@ class ModelIndexIntegrationTest {
                           "usage",
                           Map.of("prompt_tokens", 1, "completion_tokens", 1, "total_tokens", 2)));
             }
-            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+            byte[] bytes = com.trs.rag.model.OpenAiFixtures.json(response).getBytes(StandardCharsets.UTF_8);
             ex.getResponseHeaders().set("Content-Type", "application/json");
             ex.sendResponseHeaders(200, bytes.length);
             ex.getResponseBody().write(bytes);
@@ -239,8 +237,40 @@ class ModelIndexIntegrationTest {
     assertEquals(true, second.get("keyConfigured"));
     assertThrows(RagAccessException.class, () -> models.list("unknown"));
     var invalid = request("CHAT", "bad", 0);
-    invalid.setBaseUrl("http://169.254.169.254/latest");
+    invalid.setBaseUrl("file:///invalid-model-endpoint");
     assertThrows(IllegalArgumentException.class, () -> models.save(null, invalid, "admin"));
+  }
+
+  @Test
+  void deletionPreservesBindingsIndexesAndVersionNumbers() {
+    var first = config("CHAT", "chat-delete", 0);
+    UUID profile = UUID.fromString(first.get("profileId").toString());
+    var second = models.save(profile, request("CHAT", "chat-updated", 0), "admin");
+    UUID old = id(first);
+    models.bind(Map.of("answer", old), "admin");
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+        () -> models.delete(old, "admin"));
+    assertEquals(old, models.bindings("admin").get("answer"));
+    models.bind(Collections.singletonMap("answer", null), "admin");
+    models.delete(old, "admin");
+    assertThrows(RagAccessException.class, () -> models.version(old));
+    assertEquals(1, models.history(profile, "admin").size());
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+        () -> models.delete(id(second), "admin"));
+    assertEquals(3, models.save(profile, request("CHAT", "chat-third", 0), "admin").get("version"));
+
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    UUID embedding = jdbc.queryForObject(
+        "SELECT embedding_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
+    var captured = models.version(embedding);
+    var replacement = models.save(captured.getProfileId(), request("EMBEDDING", "embed4", 4), "admin");
+    models.bind(Map.of("embedding", id(replacement)), "admin");
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+        () -> models.delete(embedding, "admin"));
+    assertEquals(embedding, jdbc.queryForObject(
+        "SELECT embedding_version FROM rag_index_generation WHERE id=?", UUID.class, generation));
   }
 
   @Test

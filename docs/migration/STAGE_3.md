@@ -4,7 +4,7 @@
 
 ## 扩充范围
 
-管理员配置文本、向量、重排模型；首批支持 OpenAI-compatible chat/embedding 和兼容 `/rerank` 协议，其他协议需独立适配。配置不可变版本化，密钥以服务端 AES-GCM 加密，不回传浏览器；使用部署环境主密钥，未配置时不能写入密钥。服务地址由部署允许主机清单限制，默认只允许 HTTPS，显式允许的本地测试服务除外。
+管理员配置文本、向量、重排模型；首批支持 OpenAI-compatible chat/embedding 和兼容 `/rerank` 协议，其他协议需独立适配。配置不可变版本化，密钥以服务端 AES-GCM 加密，不回传浏览器；使用部署环境主密钥，未配置时不能写入密钥。服务地址和调用参数使用页面保存的配置版本，支持 HTTP 和 HTTPS，不依赖额外的主机白名单或 HTTP 环境变量开关。
 
 全局角色绑定：extract、summary、keywords、answer、embedding、rerank；重排可不绑定。阶段 3 真正调用抽取/摘要/向量，关键词/回答和查询重排留待阶段 4/5。管理员与知识库 OWNER 的权限分别检查。
 
@@ -24,9 +24,9 @@
 
 - V5 增加 `app_user.is_admin`，将既有 `admin` 初始化为平台管理员；普通登录用户不因拥有知识库而取得模型管理权。管理员接口在 Spring Security 检查 ADMIN，并在服务层再次查询当前管理员标记。
 - `RAG_MODEL_MASTER_KEY`：Base64 编码的 32 字节 AES 主密钥，使用部署密钥管理注入；必须与数据库一起备份、保留，不能随重启随机更换。缺失时系统仍能管理文档，但不能保存/解密非空模型密钥。配置列表、历史、测试和构建接口均不返回密钥或密文。
-- `RAG_MODEL_ALLOWED_HOSTS`：逗号分隔的精确主机名清单，无协议和路径；默认空，禁止向未授权目标发送凭据。地址禁止 userinfo、query、fragment 和重定向。
-- `RAG_MODEL_ALLOW_HTTP`：默认 false；仅可信本地/内网开发服务可显式设置 true，仍需主机清单。生产建议 HTTPS。模型协议路径分别为基础地址加 `/chat/completions`、`/embeddings`、`/rerank`，例如基础地址 `https://api.example.com/v1`。
-- 实际生成通过版本隔离的 Spring AI `ChatModel`、`EmbeddingModel` 适配器调用兼容协议；不是将 HTTP 响应伪装成固定响应。阶段 3 不启用工具执行或流式生成。
+- 模型地址、名称、API 密钥、维度、上下文/输出上限和超时取自管理员保存的不可变版本，不读取模型主机白名单或 HTTP 开关环境变量。地址支持 HTTP/HTTPS，仍禁止 userinfo、query、fragment、路径穿越、非法端口和重定向。
+- 模型协议路径分别为所配置基础地址加 `/chat/completions`、`/embeddings`、`/rerank`，例如基础地址 `http://192.168.5.68:6116/v1`。
+- 实际生成通过版本隔离的 Spring AI 官方 `OpenAiChatModel`、`OpenAiEmbeddingModel`调用兼容协议；不是将 HTTP 响应伪装成固定响应。阶段 3 不启用工具执行或流式生成。
 - 每次请求有 1..120 秒完整响应期限、4 MiB 响应上限及取消；拒绝 length/tool_calls 等未正常完成的 chat 响应。向量检查响应索引、维度、有限值和非零范数。
 - token 预算使用明确的 cl100k_base。配置上下文/输出上限需按供应商和本地样本保守设定，不宣称这一 tokenizer 等同所有模型原生 tokenizer；未适配协议须增加独立适配器和测试。
 - 新配置/编辑在 UI 保存为不可变版本；空 API 密钥保留旧密钥，勾选清除才移除。全局用途绑定指向具体版本，不能静默跟随某配置的最新版本。连接测试会实际请求模型，可能产生供应商费用。

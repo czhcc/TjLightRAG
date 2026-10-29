@@ -16,6 +16,38 @@ import org.junit.jupiter.api.Test;
 /** Real provider HTTP streams, not buffered-answer simulations. @author agent */
 class ModelStreamingTest {
   @Test
+  void finishReasonAndProviderDoneAreBothRequired() throws Exception {
+    var payload = new java.util.concurrent.atomic.AtomicReference<String>();
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      try {
+        exchange.getRequestBody().readAllBytes();
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+        byte[] bytes = OpenAiFixtures.events(payload.get()).getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.getResponseBody().write(bytes);
+      } finally { exchange.close(); }
+    });
+    server.start();
+    try {
+      var tokenizer = mock(RagTokenizer.class);
+      when(tokenizer.encode(anyString())).thenReturn(new int[] {1});
+      var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), tokenizer);
+      var version = new ModelVersion(UUID.randomUUID(), UUID.randomUUID(), "CHAT",
+          "http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "saved-chat", "", 0, 16000, 100, 3);
+      String first = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n";
+      for (String ending : List.of(
+          "data: [DONE]\n\n",
+          "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n")) {
+        payload.set(first + ending);
+        assertThrows(ModelFailure.class, () -> gateway.stream(version,
+            List.of(Map.of("role", "user", "content", "question")), ignored -> {}));
+      }
+    } finally { server.stop(0); }
+  }
+
+  @Test
   void unicodeDeltasArriveBeforeProviderCompletesAndTruncatedStreamsFail() throws Exception {
     for (boolean truncated : new boolean[] {false, true}) {
       var first = new CountDownLatch(1);
@@ -33,14 +65,14 @@ class ModelStreamingTest {
               e.sendResponseHeaders(200, 0);
               e.getResponseBody()
                   .write(
-                      "data: {\"choices\":[{\"delta\":{\"content\":\"中文🙂\"},\"finish_reason\":null}]}\n\n"
+                      OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{\"content\":\"中文🙂\"},\"finish_reason\":null}]}\n\n")
                           .getBytes(StandardCharsets.UTF_8));
               e.getResponseBody().flush();
               release.await(3, TimeUnit.SECONDS);
               if (!truncated)
                 e.getResponseBody()
                     .write(
-                        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                        OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
                             .getBytes(StandardCharsets.UTF_8));
             } catch (Exception ignored) {
             } finally {
@@ -52,7 +84,7 @@ class ModelStreamingTest {
         var t = mock(RagTokenizer.class);
         when(t.encode(anyString())).thenReturn(new int[] {1});
         var gateway =
-            new ModelGateway(new SecretVault(""), new EndpointPolicy("127.0.0.1", true), t);
+            new ModelGateway(new SecretVault(""), new EndpointPolicy(), t);
         var version =
             new ModelVersion(
                 UUID.randomUUID(),
@@ -116,7 +148,7 @@ class ModelStreamingTest {
     try {
       var t = mock(RagTokenizer.class);
       when(t.encode(anyString())).thenReturn(new int[] {1});
-      var g = new ModelGateway(new SecretVault(""), new EndpointPolicy("127.0.0.1", true), t);
+      var g = new ModelGateway(new SecretVault(""), new EndpointPolicy(), t);
       var v =
           new ModelVersion(
               UUID.randomUUID(),

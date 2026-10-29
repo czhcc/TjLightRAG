@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import IndexPanel from "./IndexPanel";
 import RetrievalPanel from "./RetrievalPanel";
 import QueryPanel from "./QueryPanel";
+import Models from "./Models";
 import { ApiError, mutate, request, text as fetchText } from "./api";
 
 type Base = {
@@ -53,13 +54,27 @@ const primary =
   "rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40";
 const secondary =
   "rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40";
+const features = [
+  ["query", "query.title"],
+  ["retrieval", "retrieval.title"],
+  ["indexes", "indexes.title"],
+  ["documents", "navigation.documents"],
+  ["jobs", "navigation.jobs"],
+  ["models", "models.title"],
+] as const;
+type Feature = (typeof features)[number][0];
 
 export default function Workspace({
   onSessionExpired,
+  admin = false,
 }: {
   onSessionExpired: () => void;
+  admin?: boolean;
 }) {
   const { t } = useTranslation();
+  const [page, setPage] = useState<Feature>("query");
+  const [basesLoaded, setBasesLoaded] = useState(false);
+  const [baseRefresh, setBaseRefresh] = useState(0);
   const [bases, setBases] = useState<Base[]>([]),
     [selectedId, setSelectedId] = useState("");
   const [newName, setNewName] = useState(""),
@@ -115,11 +130,14 @@ export default function Workspace({
   }
   useEffect(() => {
     const controller = new AbortController();
+    setLoading(true);
+    setError("");
     request<Base[]>("/api/knowledge-bases", { signal: controller.signal })
       .then((rows) => {
         if (controller.signal.aborted) return;
         if (!Array.isArray(rows)) throw new Error("Unexpected response");
         setBases(rows);
+        setBasesLoaded(true);
         setSelectedId((current) =>
           rows.some((b) => b.id === current) ? current : (rows[0]?.id ?? ""),
         );
@@ -131,7 +149,7 @@ export default function Workspace({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [onSessionExpired]);
+  }, [onSessionExpired, baseRefresh]);
   useEffect(() => {
     setDocuments(empty());
     setJobs(empty());
@@ -148,7 +166,7 @@ export default function Workspace({
     previewRequest.current?.abort();
   }, [selectedId]);
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId || !["documents", "jobs"].includes(page)) return;
     const controller = new AbortController();
     let inFlight = false;
     async function load() {
@@ -156,13 +174,13 @@ export default function Workspace({
       inFlight = true;
       try {
         const [docs, tasks] = await Promise.all([
-          request<Page<Document>>(
+          page === "documents" ? request<Page<Document>>(
             `${baseUrl}/documents?page=${documentPage}&size=20`,
             { signal: controller.signal },
-          ),
-          request<Page<Job>>(`${baseUrl}/jobs?page=${jobPage}&size=20`, {
+          ) : Promise.resolve(empty<Document>()),
+          page === "jobs" ? request<Page<Job>>(`${baseUrl}/jobs?page=${jobPage}&size=20`, {
             signal: controller.signal,
-          }),
+          }) : Promise.resolve(empty<Job>()),
         ]);
         if (controller.signal.aborted) return;
         setDocuments(docs);
@@ -187,20 +205,28 @@ export default function Workspace({
       controller.abort();
       clearInterval(timer);
     };
-  }, [selectedId, documentPage, jobPage, focusedId, refresh, onSessionExpired]);
+  }, [selectedId, page, documentPage, jobPage, focusedId, refresh, onSessionExpired]);
   useEffect(() => () => previewRequest.current?.abort(), []);
+  useEffect(() => {
+    previewRequest.current?.abort();
+    setPreview(null);
+    setError("");
+    setNotice("");
+  }, [page]);
 
   async function create(event: FormEvent) {
     event.preventDefault();
+    if (busy || !newName.trim()) return;
     setBusy(true);
     setError("");
     try {
       const created = await mutate<Base>("/api/knowledge-bases", {
-        name: newName,
+        name: newName.trim(),
         description: "",
       });
       setBases((current) => [created, ...current]);
       setSelectedId(created.id);
+      setPage("query");
       setNewName("");
     } catch (reason) {
       failure(reason);
@@ -317,47 +343,56 @@ export default function Workspace({
       </div>
     );
   }
-  return (
-    <div className="mx-auto grid max-w-screen-2xl gap-6 p-4 md:grid-cols-[240px_1fr] md:p-8">
-      <aside className="rounded-xl border border-slate-200 bg-white p-5">
-        <h1 className="mb-4 text-xl font-semibold">
-          {t("workspace.knowledgeBases")}
-        </h1>
-        {loading ? (
-          <p>{t("loading")}</p>
-        ) : bases.length === 0 ? (
-          <p className="text-sm text-slate-500">{t("workspace.noBases")}</p>
-        ) : (
-          <ul className="space-y-2">
-            {bases.map((base) => (
-              <li key={base.id}>
-                <button
-                  className={`w-full rounded-lg px-3 py-2 text-left ${base.id === selectedId ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"}`}
-                  onClick={() => setSelectedId(base.id)}
-                >
-                  {base.name}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <form
-          className="mt-8 space-y-3 border-t border-slate-100 pt-5"
-          onSubmit={create}
-        >
+  const firstBase = basesLoaded && bases.length === 0;
+  const createForm = (
+        <form className="space-y-4" onSubmit={create}>
           <label>
             {t("workspace.baseName")}
             <input
+              autoFocus={firstBase}
               required
               maxLength={100}
               value={newName}
+              disabled={busy}
               onChange={(event) => setNewName(event.target.value)}
             />
           </label>
-          <button className={primary} disabled={busy}>
-            {t("workspace.createBase")}
+          <button className={primary} disabled={busy || !newName.trim()}>
+            {busy ? t("loading") : t("workspace.createBase")}
           </button>
         </form>
+  );
+  if (loading) return <p role="status" className="p-8">{t("loading")}</p>;
+  if (firstBase) return (
+    <section aria-labelledby="first-base-title" className="mx-auto mt-12 max-w-lg rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+      <h1 id="first-base-title" className="text-2xl font-semibold">{t("workspace.firstBaseTitle")}</h1>
+      <p className="mt-3 mb-6 text-sm text-slate-500">{t("workspace.firstBaseHint")}</p>
+      {createForm}
+      {error && <p role="alert" className="mt-4 text-red-700">{t(`workspace.${error}`)}</p>}
+    </section>
+  );
+  return (
+    <div className="mx-auto grid max-w-screen-2xl items-start gap-6 p-4 md:grid-cols-[240px_minmax(0,1fr)] md:p-8">
+      <aside className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 md:sticky md:top-6">
+        <label className="block text-sm font-medium">
+          {t("workspace.currentBase")}
+          <select className="mt-2 w-full rounded-lg border border-slate-300 bg-white p-3" value={selectedId} onChange={(event) => setSelectedId(event.target.value)} disabled={!selected}>
+            {bases.map(base => <option key={base.id} value={base.id}>{base.name}</option>)}
+          </select>
+        </label>
+        <nav aria-label={t("navigation.features")} className="space-y-2 border-t border-slate-100 pt-5">
+          {features.map(([feature, label]) => (
+            <button key={feature} aria-current={page === feature ? "page" : undefined}
+              disabled={feature === "models" ? !admin : !selected}
+              title={feature === "models" && !admin ? t("models.forbidden") : undefined}
+              className={`block w-full rounded-lg px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${page === feature ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"}`}
+              onClick={() => setPage(feature)}>{t(label)}</button>
+          ))}
+        </nav>
+        <details className="border-t border-slate-100 pt-5">
+          <summary className="cursor-pointer text-sm font-medium">{t("workspace.createBase")}</summary>
+          <div className="mt-4">{createForm}</div>
+        </details>
       </aside>
       <section className="min-w-0 space-y-6">
         {error && (
@@ -370,18 +405,19 @@ export default function Workspace({
             {t(`workspace.${notice}`)}
           </p>
         )}
-        {!selected ? (
-          <p className="p-8 text-slate-500">{t("workspace.selectBase")}</p>
+        {page === "models" && admin ? (
+          <Models onSessionExpired={onSessionExpired} />
+        ) : !selected ? (
+          <button className={secondary} onClick={() => setBaseRefresh(n => n + 1)}>
+            {t("workspace.refresh")}
+          </button>
         ) : (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold">{selected.name}</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {t("workspace.preprocessingOnly")}
-                </p>
               </div>
-              <button
+              {["documents", "jobs"].includes(page) && <button
                 className={secondary}
                 onClick={() => {
                   setError("");
@@ -389,29 +425,30 @@ export default function Workspace({
                 }}
               >
                 {t("workspace.refresh")}
-              </button>
+              </button>}
             </div>
             {!canWrite && (
               <p className="text-sm text-slate-500">
                 {t("workspace.readOnly")}
               </p>
             )}
-            <QueryPanel
+            {page === "query" && <QueryPanel
               key={"query-" + selectedId}
               kb={selectedId}
               onSessionExpired={onSessionExpired}
-            />
-            <RetrievalPanel
+            />}
+            {page === "retrieval" && <RetrievalPanel
               key={"retrieval-" + selectedId}
               kb={selectedId}
               onSessionExpired={onSessionExpired}
-            />
-            <IndexPanel
+            />}
+            {page === "indexes" && <IndexPanel
               key={selectedId}
               kb={selectedId}
               owner={selected?.role === "OWNER"}
               onSessionExpired={onSessionExpired}
-            />
+            />}
+            {page === "documents" && <>
             <section className="grid gap-6 rounded-xl border border-slate-200 bg-white p-6 lg:grid-cols-2">
               <form
                 className="space-y-4"
@@ -556,7 +593,8 @@ export default function Workspace({
               )}
               {pages(documentPage, documents.total, setDocumentPage)}
             </section>
-            <section className="rounded-xl border border-slate-200 bg-white p-6">
+            </>}
+            {page === "jobs" && <section className="rounded-xl border border-slate-200 bg-white p-6">
               <h2 className="text-lg font-semibold">{t("workspace.jobs")}</h2>
               {jobs.items.length === 0 ? (
                 <p className="mt-4 text-sm text-slate-500">
@@ -583,8 +621,8 @@ export default function Workspace({
                 </ul>
               )}
               {pages(jobPage, jobs.total, setJobPage)}
-            </section>
-            {focused && (
+            </section>}
+            {["documents", "jobs"].includes(page) && focused && (
               <section className="rounded-xl border border-slate-200 bg-white p-6">
                 <h2 className="text-lg font-semibold">
                   {t("workspace.jobDetails")}
@@ -652,7 +690,7 @@ export default function Workspace({
                 </ol>
               </section>
             )}
-            {preview && (
+            {["documents", "jobs"].includes(page) && preview && (
               <section className="rounded-xl border border-slate-200 bg-white p-6">
                 <h2 className="text-lg font-semibold">
                   {t("workspace.original")}
