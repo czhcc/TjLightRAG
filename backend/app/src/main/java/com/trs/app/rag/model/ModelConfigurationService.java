@@ -142,6 +142,26 @@ public class ModelConfigurationService {
       throw new IllegalArgumentException("Invalid model configuration");
   }
 
+  /** Deletes an unreferenced historical version while retaining the latest version. @author czhcc */
+  @Transactional
+  public void delete(UUID id, String actor) {
+    admin(actor);
+    // Serialize against saves and other deletions so version numbers cannot be reused.
+    var rows = jdbc.queryForList(
+        "SELECT v.profile_id,v.version FROM rag_model_version v JOIN rag_model_profile p"
+            + " ON p.id=v.profile_id WHERE v.id=? FOR UPDATE OF p", id);
+    if (rows.isEmpty()) throw new RagAccessException(404);
+    var row = rows.getFirst();
+    Integer latest = jdbc.queryForObject(
+        "SELECT MAX(version) FROM rag_model_version WHERE profile_id=?",
+        Integer.class, row.get("profile_id"));
+    if (latest == null || ((Number) row.get("version")).intValue() >= latest)
+      throw new org.springframework.dao.DataIntegrityViolationException("Latest model version is retained");
+    // Foreign keys also fence concurrent binding/index creation; never cascade those references.
+    if (jdbc.update("DELETE FROM rag_model_version WHERE id=?", id) == 0)
+      throw new RagAccessException(404);
+  }
+
   /** Resolves a captured version without exposing its secret through REST. @author agent */
   public ModelVersion version(UUID id) {
     var rows =

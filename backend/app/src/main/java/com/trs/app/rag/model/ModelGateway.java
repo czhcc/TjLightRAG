@@ -1,22 +1,29 @@
 package com.trs.app.rag.model;
 
+import com.openai.client.OpenAIClient;
+import com.openai.client.OpenAIClientImpl;
+import com.openai.core.ClientOptions;
+import com.openai.core.LogLevel;
 import com.trs.app.rag.ingestion.RagTokenizer;
 import java.net.*;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.chat.model.*;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.document.Document;
+import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.embedding.*;
+import org.springframework.ai.openai.*;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Spring AI model adapters for bounded OpenAI-compatible wire protocols. @author agent */
+/** Version-scoped official Spring AI clients and bounded rerank transport. @author czhcc */
 @Component
 @RequiredArgsConstructor
 public class ModelGateway {
@@ -24,177 +31,149 @@ public class ModelGateway {
   private final EndpointPolicy policy;
   private final RagTokenizer tokenizer;
   private final JsonMapper json = JsonMapper.builder().build();
-  private final HttpClient client =
-      HttpClient.newBuilder()
-          .connectTimeout(Duration.ofSeconds(10))
-          .followRedirects(HttpClient.Redirect.NEVER)
-          .build();
+  private final HttpClient client = HttpClient.newBuilder()
+      .version(HttpClient.Version.HTTP_1_1)
+      .connectTimeout(Duration.ofSeconds(10))
+      .followRedirects(HttpClient.Redirect.NEVER).build();
 
-  /**
-   * Creates a version-scoped Spring AI ChatModel with no global mutable provider settings. @author
-   * agent
-   */
-  public ChatModel chatModel(ModelVersion v) {
-    return prompt -> {
-      List<Map<String, String>> messages =
-          prompt.getInstructions().stream()
-              .map(m -> Map.of("role", m.getMessageType().getValue(), "content", m.getText()))
-              .toList();
-      var result =
-          post(
-              v,
-              "/chat/completions",
-              Map.of(
-                  "model",
-                  v.getModel(),
-                  "messages",
-                  messages,
-                  "max_tokens",
-                  v.getMaxOutputTokens(),
-                  "temperature",
-                  0,
-                  "stream",
-                  false));
-      var choices = result.path("choices");
-      if (choices.size() != 1 || !choices.get(0).path("finish_reason").asText().equals("stop"))
+  /** Creates an official Spring AI text client for one immutable version. @author czhcc */
+  public OpenAiChatModel chatModel(ModelVersion version) {
+    if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
+    var sdk = sdkClient(version);
+    return OpenAiChatModel.builder().openAiClient(sdk).openAiClientAsync(sdk.async())
+        .options(OpenAiChatOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
+            .model(version.getModel()).maxTokens(version.getMaxOutputTokens()).temperature(0.0)
+            .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).build())
+        .build();
+  }
+
+  /** Uses the official client's streaming implementation. @author czhcc */
+  public OpenAiChatModel streamingChatModel(ModelVersion version) { return chatModel(version); }
+
+  /** Creates an official Spring AI embedding client for the captured vector space. @author czhcc */
+  public OpenAiEmbeddingModel embeddingModel(ModelVersion version) {
+    if (!version.getKind().equals("EMBEDDING")) throw new IllegalArgumentException();
+    return OpenAiEmbeddingModel.builder().openAiClient(sdkClient(version)).metadataMode(MetadataMode.NONE)
+        .options(OpenAiEmbeddingOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
+            .model(version.getModel()).encodingFormat(OpenAiEmbeddingOptions.EncodingFormat.FLOAT)
+            .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).build())
+        .build();
+  }
+
+  private OpenAIClient sdkClient(ModelVersion version) {
+    policy.validate(version.getBaseUrl());
+    String key = vault.decrypt(version.getCipher(), version.getProfileId());
+    var options = ClientOptions.builder().baseUrl(version.getBaseUrl())
+        .apiKey(key.isEmpty() ? "unused-no-auth" : key)
+        .httpClient(new SpringAiTransport(version.getTimeoutSeconds(), key.isEmpty()))
+        .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).logLevel(LogLevel.OFF)
+        .build();
+    return new OpenAIClientImpl(options);
+  }
+
+  /** Calls the configured text model and verifies a complete, nonempty answer. @author czhcc */
+  public String chat(ModelVersion version, List<Map<String, String>> messages) {
+    Prompt prompt = prompt(version, messages);
+    return guarded(() -> {
+      var response = chatModel(version).call(prompt);
+      if (response == null || response.getResults().size() != 1)
         throw new ModelFailure("model_truncated_or_invalid");
-      String text = choices.get(0).path("message").path("content").asText("");
-      if (text.isBlank() || text.length() > 2000000)
+      var generation = response.getResult();
+      if (!"stop".equalsIgnoreCase(generation.getMetadata().getFinishReason()))
+        throw new ModelFailure("model_truncated_or_invalid");
+      String text = generation.getOutput().getText();
+      if (text == null || text.isBlank() || text.length() > 2000000)
         throw new ModelFailure("model_empty_or_oversize");
-      return new ChatResponse(List.of(new Generation(new AssistantMessage(text))));
-    };
+      return text;
+    });
   }
 
-  /** Calls chat with an explicit input/output context guard and bounded response. @author agent */
-  public String chat(ModelVersion v, List<Map<String, String>> messages) {
-    if (!v.getKind().equals("CHAT")) throw new IllegalArgumentException();
-    int tokens =
-        messages.stream().mapToInt(m -> tokenizer.encode(m.get("content")).length + 8).sum() + 16;
-    if (tokens + v.getMaxOutputTokens() > v.getContextTokens())
+  private Prompt prompt(ModelVersion version, List<Map<String, String>> messages) {
+    if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
+    int tokens = messages.stream().mapToInt(m -> tokenizer.encode(m.get("content")).length + 8).sum() + 16;
+    if (tokens + version.getMaxOutputTokens() > version.getContextTokens())
       throw new ModelFailure("model_context_exceeded");
-    List<Message> list =
-        messages.stream()
-            .<Message>map(
-                m ->
-                    switch (m.get("role")) {
-                      case "system" -> new SystemMessage(m.get("content"));
-                      case "assistant" -> new AssistantMessage(m.get("content"));
-                      default -> new UserMessage(m.get("content"));
-                    })
-            .toList();
-    return chatModel(v).call(new Prompt(list)).getResult().getOutput().getText();
+    List<Message> list = messages.stream().<Message>map(m -> switch (m.get("role")) {
+      case "system" -> new SystemMessage(m.get("content"));
+      case "assistant" -> new AssistantMessage(m.get("content"));
+      default -> new UserMessage(m.get("content"));
+    }).toList();
+    return new Prompt(list);
   }
 
-  /** Creates a cancellable Spring AI streaming adapter for the captured version. @author agent */
-  public StreamingChatModel streamingChatModel(ModelVersion v) {
-    return prompt -> ModelStream.open(v, prompt, vault, policy, client);
-  }
-
-  /** Streams actual provider deltas; interruption disposes the HTTP subscription. @author agent */
-  public void stream(
-      ModelVersion v,
-      List<Map<String, String>> messages,
+  /** Propagates provider deltas and rejects incomplete, failed or cancelled streams. @author czhcc */
+  public void stream(ModelVersion version, List<Map<String, String>> messages,
       java.util.function.Consumer<String> delta) {
-    if (!v.getKind().equals("CHAT")) throw new IllegalArgumentException();
-    int tokens =
-        messages.stream().mapToInt(m -> tokenizer.encode(m.get("content")).length + 8).sum() + 16;
-    if (tokens + v.getMaxOutputTokens() > v.getContextTokens())
-      throw new ModelFailure("model_context_exceeded");
-    List<Message> list =
-        messages.stream()
-            .<Message>map(
-                m ->
-                    switch (m.get("role")) {
-                      case "system" -> new SystemMessage(m.get("content"));
-                      case "assistant" -> new AssistantMessage(m.get("content"));
-                      default -> new UserMessage(m.get("content"));
-                    })
-            .toList();
-    try {
-      streamingChatModel(v).stream(new Prompt(list))
-          .doOnNext(response -> delta.accept(response.getResult().getOutput().getText()))
+    Prompt prompt = prompt(version, messages);
+    guarded(() -> {
+      var stopped = new java.util.concurrent.atomic.AtomicBoolean();
+      var content = new java.util.concurrent.atomic.AtomicBoolean();
+      streamingChatModel(version).stream(prompt)
+          .doOnNext(response -> {
+            if (response.getResults().isEmpty()) return;
+            if (response.getResults().size() != 1) throw new ModelFailure("model_stream_invalid");
+            var generation = response.getResult();
+            String finish = generation.getMetadata().getFinishReason();
+            String text = generation.getOutput().getText();
+            if (finish != null && !finish.isBlank() && !"stop".equalsIgnoreCase(finish))
+              throw new ModelFailure("model_truncated_or_invalid");
+            if (text != null && !text.isEmpty()) {
+              if (stopped.get()) throw new ModelFailure("model_stream_invalid");
+              content.set(true);
+              delta.accept(text);
+            }
+            if ("stop".equalsIgnoreCase(finish)) stopped.set(true);
+          })
+          .concatWith(Flux.defer(() -> stopped.get() && content.get() ? Flux.empty()
+              : Flux.error(new ModelFailure("model_stream_incomplete"))))
+          .timeout(Duration.ofSeconds(version.getTimeoutSeconds()), Flux.error(new ModelFailure("model_timeout")))
           .blockLast();
-    } catch (ModelFailure failure) {
-      throw failure;
-    } catch (RuntimeException failure) {
-      if (Thread.currentThread().isInterrupted()) throw new ModelFailure("model_interrupted");
-      throw new ModelFailure("model_stream_unavailable");
-    }
+      return null;
+    });
   }
 
-  /** Creates a version-scoped Spring AI EmbeddingModel. @author agent */
-  public EmbeddingModel embeddingModel(ModelVersion v) {
-    return new EmbeddingModel() {
-      /**
-       * Sends one embedding request and validates every returned index and dimension. @author agent
-       */
-      @Override
-      public EmbeddingResponse call(EmbeddingRequest request) {
-        var response =
-            post(
-                v,
-                "/embeddings",
-                Map.of(
-                    "model",
-                    v.getModel(),
-                    "input",
-                    request.getInstructions(),
-                    "encoding_format",
-                    "float"));
-        var data = response.path("data");
-        if (!data.isArray() || data.size() != request.getInstructions().size())
-          throw new ModelFailure("embedding_invalid");
-        List<Embedding> rows = new ArrayList<>();
-        Set<Integer> seen = new HashSet<>();
-        for (var item : data) {
-          int index = item.path("index").asInt(-1);
-          var vector = item.path("embedding");
-          if (index < 0
-              || index >= data.size()
-              || !seen.add(index)
-              || vector.size() != v.getDimensions())
-            throw new ModelFailure("embedding_dimension_mismatch");
-          float[] values = new float[vector.size()];
-          double norm = 0;
-          for (int i = 0; i < values.length; i++) {
-            if (!vector.get(i).isNumber()) throw new ModelFailure("embedding_invalid");
-            values[i] = (float) vector.get(i).asDouble();
-            if (!Float.isFinite(values[i])) throw new ModelFailure("embedding_invalid");
-            norm += (double) values[i] * values[i];
-          }
-          if (norm == 0) throw new ModelFailure("embedding_invalid");
-          rows.add(new Embedding(values, index));
-        }
-        rows.sort(Comparator.comparing(Embedding::getIndex));
-        return new EmbeddingResponse(rows);
-      }
+  /** Generates one validated vector using the saved embedding version. @author czhcc */
+  public float[] embed(ModelVersion version, String text) { return embedBatch(version, List.of(text)).getFirst(); }
 
-      /** Adapts a Spring AI document to the explicit text request. @author agent */
-      @Override
-      public float[] embed(Document document) {
-        return embed(document.getText());
-      }
-    };
-  }
-
-  /** Generates one finite nonzero vector using the captured model space. @author agent */
-  public float[] embed(ModelVersion v, String text) {
-    if (!v.getKind().equals("EMBEDDING")) throw new IllegalArgumentException();
-    if (tokenizer.encode(text).length > v.getContextTokens())
-      throw new ModelFailure("embedding_context_exceeded");
-    return embeddingModel(v).embed(text);
-  }
-
-  /**
-   * Embeds only the texts used by one query in a single validated Spring AI request. @author agent
-   */
+  /** Batches query vectors without changing the generation's embedding configuration. @author czhcc */
   public List<float[]> embedBatch(ModelVersion version, List<String> texts) {
     if (!version.getKind().equals("EMBEDDING") || texts.isEmpty() || texts.size() > 16)
       throw new IllegalArgumentException();
     for (String text : texts)
       if (tokenizer.encode(text).length > version.getContextTokens())
         throw new ModelFailure("embedding_context_exceeded");
-    return embeddingModel(version).embed(texts);
+    return guarded(() -> {
+      var response = embeddingModel(version).call(new EmbeddingRequest(texts, null));
+      if (response.getResults().size() != texts.size()) throw new ModelFailure("embedding_invalid");
+      var ordered = new float[texts.size()][];
+      for (var row : response.getResults()) {
+        int index = row.getIndex();
+        float[] vector = row.getOutput();
+        if (index < 0 || index >= texts.size() || ordered[index] != null
+            || vector.length != version.getDimensions()) throw new ModelFailure("embedding_dimension_mismatch");
+        double norm = 0;
+        for (float value : vector) {
+          if (!Float.isFinite(value)) throw new ModelFailure("embedding_invalid");
+          norm += (double) value * value;
+        }
+        if (norm == 0) throw new ModelFailure("embedding_invalid");
+        ordered[index] = vector;
+      }
+      return Arrays.asList(ordered);
+    });
+  }
+
+  private <T> T guarded(Supplier<T> action) {
+    try {
+      return action.get();
+    } catch (RuntimeException error) {
+      for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+        if (cause instanceof ModelFailure failure) throw failure;
+        if (cause instanceof java.io.InterruptedIOException || cause instanceof java.util.concurrent.TimeoutException)
+          throw new ModelFailure("model_timeout");
+      }
+      throw new ModelFailure(Thread.currentThread().isInterrupted() ? "model_interrupted" : "model_unavailable");
+    }
   }
 
   /**

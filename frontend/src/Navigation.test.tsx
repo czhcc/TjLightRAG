@@ -16,7 +16,7 @@ it("keeps protected navigation unavailable without a session", async () => {
   );
   render(<App />);
   await screen.findByLabelText("用户名");
-  const nav = within(screen.getByRole("navigation"));
+  const nav = within(screen.getByRole("navigation", { name: "账户" }));
   expect(nav.queryByRole("button", { name: "注销" })).toBeNull();
   expect(screen.queryByRole("main", { name: "Workspace" })).toBeNull();
 });
@@ -28,7 +28,7 @@ it("restores the session and keeps bilingual account navigation", async () => {
   );
   render(<App />);
   await screen.findByRole("main", { name: "Workspace" });
-  const nav = within(screen.getByRole("navigation"));
+  const nav = within(screen.getByRole("navigation", { name: "账户" }));
   expect(nav.getByRole("button", { name: "注销" })).toBeTruthy();
   fireEvent.click(nav.getByRole("button", { name: "English" }));
   expect(nav.getByRole("button", { name: "Sign out" })).toBeTruthy();

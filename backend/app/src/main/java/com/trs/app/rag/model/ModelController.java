@@ -49,6 +49,13 @@ public class ModelController {
     return service.test(version, user.getName());
   }
 
+  /** Deletes an unreferenced historical configuration version. @author czhcc */
+  @DeleteMapping("/versions/{version}")
+  @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+  public void delete(@PathVariable UUID version, Principal user) {
+    service.delete(version, user.getName());
+  }
+
   /** Reads purpose bindings. @author agent */
   @GetMapping("/bindings")
   public Map<String, UUID> bindings(Principal user) {

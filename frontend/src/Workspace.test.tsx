@@ -69,7 +69,7 @@ function mockApi(role = "OWNER") {
 it("submits pasted text with CSRF and exposes task failure/retry controls", async () => {
   const fetch = mockApi();
   render(<Workspace onSessionExpired={() => {}} />);
-  fireEvent.click(await screen.findByRole("button", { name: "知识库一" }));
+  fireEvent.click(await screen.findByRole("button", { name: "文档管理" }));
   fireEvent.change(screen.getByLabelText("文档名称"), {
     target: { value: "note.md" },
   });
@@ -91,7 +91,7 @@ it("submits pasted text with CSRF and exposes task failure/retry controls", asyn
 it("readers cannot submit or retry, and language changes update workspace labels", async () => {
   mockApi("READER");
   render(<Workspace onSessionExpired={() => {}} />);
-  fireEvent.click(await screen.findByRole("button", { name: "知识库一" }));
+  fireEvent.click(await screen.findByRole("button", { name: "文档管理" }));
   expect(
     (screen.getByRole("button", { name: "提交文档" }) as HTMLButtonElement)
       .disabled,
@@ -116,7 +116,7 @@ it("expires the session rather than showing another knowledge base on 401", asyn
 it("uploads a file without forcing a multipart Content-Type", async () => {
   const fetch = mockApi();
   render(<Workspace onSessionExpired={() => {}} />);
-  await screen.findByRole("button", { name: "知识库一" });
+  fireEvent.click(await screen.findByRole("button", { name: "文档管理" }));
   const file = new File(["# Heading\n知识🙂"], "upload.md", {
     type: "text/markdown",
   });
@@ -180,6 +180,7 @@ it("persists cancellation and explicit retry through protected task requests", a
   });
   vi.stubGlobal("fetch", fetch);
   render(<Workspace onSessionExpired={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "任务管理" }));
   fireEvent.click(
     (await screen.findAllByRole("button", { name: "note.md" }))[0],
   );
@@ -259,6 +260,7 @@ it("renders Markdown and chunk source literally rather than executing embedded H
     }),
   );
   render(<Workspace onSessionExpired={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "文档管理" }));
   fireEvent.click(
     (await screen.findAllByRole("button", { name: "safe.md" }))[0],
   );
