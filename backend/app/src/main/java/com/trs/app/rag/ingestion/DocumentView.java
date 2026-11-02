@@ -19,6 +19,7 @@ public class DocumentView {
   private java.util.UUID jobId;
   private String format;
   private String status;
+  private String errorCode;
   private long sizeBytes;
   private long chunkCount;
   private java.time.Instant createdAt;

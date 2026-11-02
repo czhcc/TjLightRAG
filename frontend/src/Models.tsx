@@ -45,6 +45,8 @@ export default function Models({
   const { t } = useTranslation();
   const [probes, setProbes] = useState<Record<string, Probe>>({});
   const [pendingDelete, setPendingDelete] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const probeRequest = useRef<AbortController | null>(null);
   const [models, setModels] = useState<Model[]>([]),
     [bindings, setBindings] = useState<Record<string, string>>({}),
@@ -190,6 +192,8 @@ export default function Models({
   async function remove(id: string) {
     if (busy) return;
     setBusy(true);
+    setDeleting(true);
+    setDeleteError("");
     setError("");
     setNotice("");
     try {
@@ -199,13 +203,17 @@ export default function Models({
       setNotice(t("models.deleted"));
       await load();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) setError(t("models.deleteConflict"));
+      if (e instanceof ApiError && e.status === 409) setDeleteError(t("models.deleteConflict"));
       else if (e instanceof ApiError && e.status === 404) {
         setPendingDelete("");
         await load();
         setError(t("models.deleteMissing"));
-      } else fail(e);
+      } else {
+        if (e instanceof ApiError && e.status === 401) onSessionExpired();
+        setDeleteError(t(e instanceof ApiError && e.status === 403 ? "models.forbidden" : "models.failure"));
+      }
     } finally {
+      setDeleting(false);
       setBusy(false);
     }
   }
@@ -375,7 +383,7 @@ export default function Models({
                         {t(probes[m.id]?.state === "pending" ? "models.testing" : "models.test")}
                       </button>
                       {models.some(other => other.profileId === m.profileId && other.version > m.version) && (
-                        <button disabled={busy} onClick={() => setPendingDelete(m.id)}
+                        <button disabled={busy} onClick={() => { setDeleteError(""); setPendingDelete(m.id); }}
                           className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700 disabled:opacity-40">
                           {t("models.delete")}
                         </button>
@@ -385,8 +393,9 @@ export default function Models({
                   {pendingDelete === m.id && (
                     <div role="group" aria-label={t("models.confirmDelete")} className="rounded-lg bg-red-50 p-3">
                       <p className="text-sm text-red-800">{t("models.deletePrompt", { name: m.name, version: m.version })}</p>
+                      {deleteError && <p role="alert" className="mt-2 text-sm text-red-700">{deleteError}</p>}
                       <div className="mt-2 flex gap-3">
-                        <button disabled={busy} onClick={() => void remove(m.id)} className="text-sm text-red-700 disabled:opacity-40">{t("models.confirmDelete")}</button>
+                        <button disabled={busy} onClick={() => void remove(m.id)} className="text-sm text-red-700 disabled:opacity-40">{t(deleting ? "models.deleting" : "models.confirmDelete")}</button>
                         <button disabled={busy} onClick={() => setPendingDelete("")} className="text-sm disabled:opacity-40">{t("models.cancelDelete")}</button>
                       </div>
                     </div>

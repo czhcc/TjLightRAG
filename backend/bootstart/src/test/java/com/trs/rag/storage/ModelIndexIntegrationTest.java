@@ -63,6 +63,7 @@ class ModelIndexIntegrationTest {
   @Autowired JobService jobs;
   @Autowired IngestionProcessor ingestion;
   @Autowired JdbcTemplate jdbc;
+  @Autowired DocumentWorkflowService workflow;
   @org.springframework.boot.test.web.server.LocalServerPort int port;
   HttpServer server;
   UUID kb;
@@ -219,6 +220,117 @@ class ModelIndexIntegrationTest {
         "SELECT state FROM rag_index_generation WHERE id=?", String.class, gen);
   }
 
+  void advanceDocuments() {
+    Long revision = jdbc.queryForObject("SELECT revision FROM rag_document_index_queue WHERE knowledge_base_id=?", Long.class, kb);
+    workflow.advance(kb, revision);
+  }
+
+  UUID automaticGeneration() {
+    return jdbc.queryForObject("SELECT generation_id FROM rag_document_index_queue WHERE knowledge_base_id=?", UUID.class, kb);
+  }
+
+  @Test
+  void documentsAutomaticallyBuildActivatePauseResumeAndDelete() {
+    bind("embed3");
+    var first = documents.acceptText(kb, "admin", "auto-a.md", "# A\nAlice and Bob research knowledge graphs.", "markdown", 64, 16);
+    workflow.action(kb, first.getDocumentId(), "admin", "pause");
+    assertEquals("paused", documents.get(kb, "admin", first.getDocumentId()).getStatus());
+    assertTrue(jobs.claim("paused-worker").isEmpty());
+
+    var second = documents.acceptText(kb, "admin", "auto-b.md", "# B\nBob researches graphs and information.", "markdown", 64, 16);
+    ingestion.process(jobs.claim("auto-test").orElseThrow());
+    advanceDocuments();
+    UUID generation = automaticGeneration();
+    assertNotNull(generation);
+    assertEquals("indexing", documents.get(kb, "admin", second.getDocumentId()).getStatus());
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    assertEquals("indexed", documents.get(kb, "admin", second.getDocumentId()).getStatus());
+    assertEquals("paused", documents.get(kb, "admin", first.getDocumentId()).getStatus());
+
+    workflow.action(kb, first.getDocumentId(), "admin", "run");
+    var oldLease = jobs.claim("old-attempt").orElseThrow();
+    workflow.action(kb, first.getDocumentId(), "admin", "pause");
+    workflow.action(kb, first.getDocumentId(), "admin", "run");
+    assertThrows(LeaseLostException.class, () -> jobs.load(oldLease));
+    ingestion.process(jobs.claim("new-attempt").orElseThrow());
+    advanceDocuments();
+    UUID newer = automaticGeneration();
+    assertNotEquals(generation, newer);
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    assertEquals("indexed", documents.get(kb, "admin", first.getDocumentId()).getStatus());
+    assertEquals(newer, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+
+    workflow.action(kb, second.getDocumentId(), "admin", "delete");
+    assertThrows(RagAccessException.class, () -> documents.content(kb, "admin", second.getDocumentId(), null));
+    assertEquals(1, documents.list(kb, "admin", 0, 20).getTotal());
+    assertNull(jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+    advanceDocuments();
+    UUID clean = automaticGeneration();
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_document WHERE knowledge_base_id=? AND generation_id=? AND document_id=?", Integer.class, kb, clean, second.getDocumentId()));
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    assertEquals(clean, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+    workflow.action(kb, first.getDocumentId(), "admin", "delete");
+    advanceDocuments();
+    assertEquals(0, documents.list(kb, "admin", 0, 20).getTotal());
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_document_index_queue WHERE knowledge_base_id=?", Integer.class, kb));
+  }
+
+  @Test
+  void documentRebuildFencesCancelledGenerationAndStaleCoordinatorErrors() {
+    bind("embed3");
+    var submission = documents.acceptText(kb, "admin", "rebuild.md", "Alice and Bob research graphs.", "markdown", 64, 16);
+    ingestion.process(jobs.claim("workflow-test").orElseThrow());
+    advanceDocuments();
+    UUID original = automaticGeneration();
+    var stale = indexes.claim().orElseThrow();
+    long revision = jdbc.queryForObject("SELECT revision FROM rag_document_index_queue WHERE knowledge_base_id=?", Long.class, kb);
+    workflow.action(kb, submission.getDocumentId(), "admin", "pause");
+    workflow.action(kb, submission.getDocumentId(), "admin", "run");
+    workflow.failed(kb, revision, original, "stale_error");
+    assertNull(documents.get(kb, "admin", submission.getDocumentId()).getErrorCode());
+    assertThrows(RuntimeException.class, () -> indexes.check(stale));
+    indexes.fail(stale, "late_failure");
+    assertEquals("cancelled", state(original));
+    advanceDocuments();
+    assertNotEquals(original, automaticGeneration());
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    UUID active = jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb);
+    workflow.action(kb, submission.getDocumentId(), "admin", "rebuild");
+    advanceDocuments();
+    UUID rebuilt = automaticGeneration();
+    assertNotEquals(active, rebuilt);
+    assertEquals(active, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+    assertEquals("processed", jobs.get(kb, "admin", submission.getJobId()).getStatus());
+  }
+
+  @Test
+  void writerCanAutomaticallyPublishButRevokedWriterCannotFinishAnotherBuild() {
+    bind("embed3");
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'document-writer',password_hash"
+        + " FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "document-writer", KnowledgeRole.WRITER);
+    var submission = documents.acceptText(kb, "document-writer", "writer.md",
+        "Alice and Bob research knowledge graphs.", "markdown", 64, 16);
+    ingestion.process(jobs.claim("writer-test").orElseThrow());
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    UUID active = jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb);
+    assertNotNull(active);
+    assertEquals("indexed", documents.get(kb, "document-writer", submission.getDocumentId()).getStatus());
+    workflow.action(kb, submission.getDocumentId(), "document-writer", "rebuild");
+    advanceDocuments();
+    var lease = indexes.claim().orElseThrow();
+    bases.grant(kb, "admin", "document-writer", KnowledgeRole.READER);
+    assertThrows(RagAccessException.class, () -> indexes.check(lease));
+    assertThrows(RagAccessException.class, () -> workflow.action(kb, submission.getDocumentId(), "document-writer", "delete"));
+    assertEquals(active, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
   @Test
   void secretIsEncryptedMaskedVersionedAndAdminOnly() {
     var first = config("CHAT", "chat", 0);
@@ -271,6 +383,78 @@ class ModelIndexIntegrationTest {
         () -> models.delete(embedding, "admin"));
     assertEquals(embedding, jdbc.queryForObject(
         "SELECT embedding_version FROM rag_index_generation WHERE id=?", UUID.class, generation));
+  }
+
+  private long queueRevision() {
+    return jdbc.queryForObject("SELECT revision FROM rag_document_index_queue WHERE knowledge_base_id=?", Long.class, kb);
+  }
+
+  @Test
+  void deletingOldModelCleansTerminalIndexesAndFencesTheDocumentQueue() {
+    bind("embed3");
+    ingest();
+    UUID failed = id(indexes.create(kb, "admin"));
+    UUID cancelled = id(indexes.create(kb, "admin"));
+    UUID old = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, failed);
+    var captured = models.version(old);
+    UUID replacement = id(models.save(captured.getProfileId(), request("CHAT", "replacement", 0), "admin"));
+    models.bind(Map.of("extract", replacement, "summary", replacement), "admin");
+    jdbc.update("UPDATE rag_index_generation SET state='failed',error_code='model_timeout',retry_at=NULL WHERE id=?", failed);
+    jdbc.update("UPDATE rag_index_generation SET state='cancelled' WHERE id=?", cancelled);
+    jdbc.update("UPDATE rag_document_index_queue SET generation_id=?,error_code='model_timeout' WHERE knowledge_base_id=?", failed, kb);
+    long revision = queueRevision();
+    models.delete(old, "admin");
+    assertThrows(RagAccessException.class, () -> models.version(old));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_generation WHERE id IN (?,?)", Integer.class, failed, cancelled));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id IN (?,?)", Integer.class, failed, cancelled));
+    var queue = jdbc.queryForMap("SELECT generation_id,error_code,revision FROM rag_document_index_queue WHERE knowledge_base_id=?", kb);
+    assertNull(queue.get("generation_id"));
+    assertEquals("model_timeout", queue.get("error_code"));
+    assertTrue(((Number) queue.get("revision")).longValue() > revision);
+    workflow.failed(kb, revision, failed, "stale_error");
+    assertEquals("model_timeout", jdbc.queryForObject("SELECT error_code FROM rag_document_index_queue WHERE knowledge_base_id=?", String.class, kb));
+    UUID document = jdbc.queryForObject("SELECT id FROM rag_document WHERE knowledge_base_id=?", UUID.class, kb);
+    workflow.action(kb, document, "admin", "run");
+    workflow.advance(kb, queueRevision());
+    assertEquals(replacement, jdbc.queryForObject("SELECT g.extract_version FROM rag_document_index_queue q JOIN rag_index_generation g"
+        + " ON g.knowledge_base_id=q.knowledge_base_id AND g.id=q.generation_id WHERE q.knowledge_base_id=?", UUID.class, kb));
+  }
+
+  @Test
+  void modelDeletionKeepsLiveReadyRetryingAndActiveIndexes() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    UUID old = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
+    var captured = models.version(old);
+    UUID replacement = id(models.save(captured.getProfileId(), request("CHAT", "replacement", 0), "admin"));
+    models.bind(Map.of("extract", replacement, "summary", replacement), "admin");
+    for (String state : List.of("pending", "building", "ready", "failed")) {
+      jdbc.update("UPDATE rag_index_generation SET state=?,retry_at=CURRENT_TIMESTAMP WHERE id=?", state, generation);
+      assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(old, "admin"));
+      assertEquals(state, state(generation));
+    }
+    jdbc.update("UPDATE rag_index_generation SET retry_at=NULL WHERE id=?", generation);
+    jdbc.update("UPDATE rag_knowledge_base SET active_generation_id=? WHERE id=?", generation, kb);
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(old, "admin"));
+    assertEquals(generation, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
+  @Test
+  void boundModelDeletionRollsBackTerminalIndexCleanup() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    UUID old = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
+    var captured = models.version(old);
+    models.save(captured.getProfileId(), request("CHAT", "replacement", 0), "admin");
+    jdbc.update("UPDATE rag_index_generation SET state='cancelled' WHERE id=?", generation);
+    jdbc.update("UPDATE rag_document_index_queue SET generation_id=? WHERE knowledge_base_id=?", generation, kb);
+    long revision = queueRevision();
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(old, "admin"));
+    assertEquals("cancelled", state(generation));
+    assertEquals(revision, queueRevision());
+    assertEquals(generation, jdbc.queryForObject("SELECT generation_id FROM rag_document_index_queue WHERE knowledge_base_id=?", UUID.class, kb));
   }
 
   @Test

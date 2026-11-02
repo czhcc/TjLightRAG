@@ -20,6 +20,35 @@ import org.springframework.web.multipart.MultipartFile;
 public class DocumentController {
   private final DocumentService documents;
   private final JobService jobs;
+  private final DocumentWorkflowService workflow;
+
+  /** Pauses parsing or building without allowing stale workers to publish. @author czhcc */
+  @PostMapping("/documents/{document}/pause")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void pause(@PathVariable UUID kb, @PathVariable UUID document, Principal user) {
+    workflow.action(kb, document, user.getName(), "pause");
+  }
+
+  /** Continues a document's durable pipeline after pause or failure. @author czhcc */
+  @PostMapping("/documents/{document}/run")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void run(@PathVariable UUID kb, @PathVariable UUID document, Principal user) {
+    workflow.action(kb, document, user.getName(), "run");
+  }
+
+  /** Rebuilds indexes from this document's already parsed revision. @author czhcc */
+  @PostMapping("/documents/{document}/rebuild")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void rebuild(@PathVariable UUID kb, @PathVariable UUID document, Principal user) {
+    workflow.action(kb, document, user.getName(), "rebuild");
+  }
+
+  /** Removes a document from business lists and future published indexes. @author czhcc */
+  @DeleteMapping("/documents/{document}")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  public void delete(@PathVariable UUID kb, @PathVariable UUID document, Principal user) {
+    workflow.action(kb, document, user.getName(), "delete");
+  }
 
   @PostMapping("/documents/text")
   /**
