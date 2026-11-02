@@ -18,6 +18,8 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
       .retryOnConnectionFailure(false).build();
   private final OkHttpClient client;
   private final boolean noAuth;
+  private final java.util.Set<Call> calls = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
 
   SpringAiTransport(int seconds, boolean noAuth) {
     this.client = SHARED.newBuilder().callTimeout(Duration.ofSeconds(seconds))
@@ -43,15 +45,20 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
       @Override
       public void writeTo(BufferedSink sink) { body.writeTo(sink.outputStream()); }
     };
-    return client.newCall(builder.method(request.method().name(), output).build());
+    Call active = client.newCall(builder.method(request.method().name(), output).build());
+    calls.add(active);
+    if (closed.get()) active.cancel();
+    return active;
   }
 
   /** Executes an SDK request without exposing provider errors. @author czhcc */
   @Override
   public HttpResponse execute(HttpRequest request, RequestOptions options) {
+    Call active = call(request);
     try {
-      return response(call(request).execute());
+      return response(active, active.execute());
     } catch (IOException error) {
+      calls.remove(active);
       throw failure(error);
     } finally {
       if (request.body() != null) request.body().close();
@@ -70,12 +77,15 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
     call.enqueue(new Callback() {
       /** Sanitizes transport failures. @author czhcc */
       @Override
-      public void onFailure(Call active, IOException error) { result.completeExceptionally(failure(error)); }
+      public void onFailure(Call active, IOException error) {
+        calls.remove(active);
+        result.completeExceptionally(failure(error));
+      }
       /** Transfers ownership of a bounded response to the SDK. @author czhcc */
       @Override
       public void onResponse(Call active, Response response) {
         try {
-          var wrapped = response(response);
+          var wrapped = response(active, response);
           if (!result.complete(wrapped)) wrapped.close();
         } catch (RuntimeException error) {
           response.close();
@@ -86,10 +96,11 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
     return result;
   }
 
-  private HttpResponse response(Response response) {
+  private HttpResponse response(Call active, Response response) {
     if (!response.isSuccessful()) {
       int status = response.code();
       response.close();
+      calls.remove(active);
       throw new ModelFailure(status == 429 ? "model_rate_limited" : "model_http_error");
     }
     boolean stream = response.request().url().encodedPath().endsWith("/chat/completions")
@@ -107,7 +118,9 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
       public InputStream body() { return input; }
       /** Releases the HTTP response on completion or cancellation. @author czhcc */
       @Override
-      public void close() { response.close(); }
+      public void close() {
+        try { response.close(); } finally { calls.remove(active); }
+      }
     };
   }
 
@@ -115,9 +128,13 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
     return new ModelFailure(error instanceof java.io.InterruptedIOException ? "model_timeout" : "model_unavailable");
   }
 
-  /** Leaves shared connection and dispatcher lifecycle to the application. @author czhcc */
+  /** Cancels this invocation's calls while retaining shared idle connection pools. @author czhcc */
   @Override
-  public void close() {}
+  public void close() {
+    closed.set(true);
+    calls.forEach(Call::cancel);
+    calls.clear();
+  }
 
   /** Limits wire bytes and requires the provider's SSE completion marker. @author czhcc */
   private static final class WireInput extends FilterInputStream {

@@ -26,13 +26,42 @@ it.each([false, true])("deletes an old version or explains a reference conflict:
   expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
   if (conflict) {
-    await screen.findByText("无法删除：该版本仍被用途绑定或索引引用，或已成为最新版本。");
+    const confirmation = within(old).getByRole("group", { name: "确认删除" });
+    expect((await within(confirmation).findByRole("alert")).textContent)
+      .toBe("无法删除：该版本仍被用途绑定或索引引用，或已成为最新版本。");
     expect(screen.getByText("旧配置-v1")).toBeTruthy();
   } else {
     await waitFor(() => expect(screen.queryByText("旧配置-v1")).toBeNull());
     expect(fetch.mock.calls.some(([url, init]) => url.endsWith("/versions/v1") &&
       init?.method === "DELETE" && (init.headers as Record<string, string>)["X-CSRF-TOKEN"] === "csrf")).toBe(true);
   }
+});
+
+it("shows deletion progress and keeps server failures next to the confirmation", async () => {
+  let finishDelete!: (response: unknown) => void;
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === "DELETE") return new Promise(resolve => { finishDelete = resolve; });
+    return { ok: true, status: 200, json: async () =>
+      url.endsWith("/csrf") ? { token: "csrf" } :
+      url.endsWith("/models") ? [2, 1].map(version => ({
+        id: `v${version}`, profileId: "profile", name: `配置-v${version}`, kind: "CHAT",
+        version, model: "model", baseUrl: "https://example.com/v1", keyConfigured: false,
+      })) : {} };
+  }));
+  render(<Models onSessionExpired={() => {}} />);
+  const old = (await screen.findByText("配置-v1")).closest("li")!;
+  fireEvent.click(within(old).getByRole("button", { name: "删除旧版本" }));
+  const confirmation = within(old).getByRole("group", { name: "确认删除" });
+  fireEvent.click(within(confirmation).getByRole("button", { name: "确认删除" }));
+  const pending = await within(confirmation).findByRole("button", { name: "删除中…" });
+  expect((pending as HTMLButtonElement).disabled).toBe(true);
+  await waitFor(() => expect(finishDelete).toBeTypeOf("function"));
+  finishDelete({ ok: false, status: 500, json: async () => ({}) });
+  await within(confirmation).findByRole("alert");
+  expect((within(confirmation).getByRole("button", { name: "确认删除" }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(within(confirmation).getByRole("button", { name: "取消" }));
+  fireEvent.click(within(old).getByRole("button", { name: "删除旧版本" }));
+  expect(within(old).queryByRole("alert")).toBeNull();
 });
 beforeEach(async () => {
   vi.restoreAllMocks();

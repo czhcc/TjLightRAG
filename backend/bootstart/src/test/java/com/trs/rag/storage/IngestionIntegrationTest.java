@@ -405,6 +405,17 @@ class IngestionIntegrationTest {
                 HttpResponse.BodyHandlers.ofString())
             .body()
             .contains("知识图谱🙂"));
+    for (String action : List.of("pause", "run", "rebuild")) {
+      URI uri = URI.create(prefix + "/documents/" + document + "/" + action);
+      assertEquals(403, client.send(HttpRequest.newBuilder(uri)
+          .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+      assertEquals(204, client.send(HttpRequest.newBuilder(uri).header("X-CSRF-TOKEN", token)
+          .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    }
+    URI uri = URI.create(prefix + "/documents/" + document);
+    assertEquals(403, client.send(HttpRequest.newBuilder(uri).DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(204, client.send(HttpRequest.newBuilder(uri).header("X-CSRF-TOKEN", token).DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(404, client.send(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
     var fill = new byte[DocumentService.MAX_BYTES + 1];
     Arrays.fill(fill, (byte) 'a');
     assertEquals(
@@ -420,6 +431,17 @@ class IngestionIntegrationTest {
                     .build(),
                 HttpResponse.BodyHandlers.ofString())
             .statusCode());
+  }
+
+  @Test
+  void directoryUploadsKeepDistinctRelativePathsWithoutTraversal() {
+    byte[] input = "Directory document text".getBytes(StandardCharsets.UTF_8);
+    var first = documents.acceptUpload(kb, "admin", "folder-a/note.txt", input, 32, 8);
+    var second = documents.acceptUpload(kb, "admin", "folder-b/note.txt", input, 32, 8);
+    assertNotEquals(first.getDocumentId(), second.getDocumentId());
+    assertEquals("folder-a/note.txt", documents.get(kb, "admin", first.getDocumentId()).getSourceName());
+    assertThrows(IllegalArgumentException.class,
+        () -> documents.acceptUpload(kb, "admin", "folder/../note.txt", input, 32, 8));
   }
 
   private byte[] multipart(String boundary, String filename, byte[] input) throws Exception {

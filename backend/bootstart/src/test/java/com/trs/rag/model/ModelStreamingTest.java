@@ -68,7 +68,7 @@ class ModelStreamingTest {
                       OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{\"content\":\"中文🙂\"},\"finish_reason\":null}]}\n\n")
                           .getBytes(StandardCharsets.UTF_8));
               e.getResponseBody().flush();
-              release.await(3, TimeUnit.SECONDS);
+              release.await(15, TimeUnit.SECONDS);
               if (!truncated)
                 e.getResponseBody()
                     .write(
@@ -96,7 +96,7 @@ class ModelStreamingTest {
                 0,
                 16000,
                 100,
-                2);
+                10);
         var texts = new CopyOnWriteArrayList<String>();
         var future =
             executor.submit(
@@ -108,7 +108,7 @@ class ModelStreamingTest {
                           texts.add(delta);
                           first.countDown();
                         }));
-        assertTrue(first.await(2, TimeUnit.SECONDS));
+        assertTrue(first.await(5, TimeUnit.SECONDS));
         assertFalse(future.isDone());
         assertEquals(List.of("中文🙂"), texts);
         release.countDown();

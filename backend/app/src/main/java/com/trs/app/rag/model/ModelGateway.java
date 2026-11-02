@@ -39,7 +39,10 @@ public class ModelGateway {
   /** Creates an official Spring AI text client for one immutable version. @author czhcc */
   public OpenAiChatModel chatModel(ModelVersion version) {
     if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
-    var sdk = sdkClient(version);
+    return chatModel(version, sdkClient(version));
+  }
+
+  private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk) {
     return OpenAiChatModel.builder().openAiClient(sdk).openAiClientAsync(sdk.async())
         .options(OpenAiChatOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
             .model(version.getModel()).maxTokens(version.getMaxOutputTokens()).temperature(0.0)
@@ -61,11 +64,15 @@ public class ModelGateway {
   }
 
   private OpenAIClient sdkClient(ModelVersion version) {
+    return sdkClient(version, null);
+  }
+
+  private OpenAIClient sdkClient(ModelVersion version, SpringAiTransport transport) {
     policy.validate(version.getBaseUrl());
     String key = vault.decrypt(version.getCipher(), version.getProfileId());
     var options = ClientOptions.builder().baseUrl(version.getBaseUrl())
         .apiKey(key.isEmpty() ? "unused-no-auth" : key)
-        .httpClient(new SpringAiTransport(version.getTimeoutSeconds(), key.isEmpty()))
+        .httpClient(transport == null ? new SpringAiTransport(version.getTimeoutSeconds(), key.isEmpty()) : transport)
         .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).logLevel(LogLevel.OFF)
         .build();
     return new OpenAIClientImpl(options);
@@ -108,7 +115,9 @@ public class ModelGateway {
     guarded(() -> {
       var stopped = new java.util.concurrent.atomic.AtomicBoolean();
       var content = new java.util.concurrent.atomic.AtomicBoolean();
-      streamingChatModel(version).stream(prompt)
+      try (var transport = new SpringAiTransport(version.getTimeoutSeconds(),
+          vault.decrypt(version.getCipher(), version.getProfileId()).isEmpty())) {
+      chatModel(version, sdkClient(version, transport)).stream(prompt)
           .doOnNext(response -> {
             if (response.getResults().isEmpty()) return;
             if (response.getResults().size() != 1) throw new ModelFailure("model_stream_invalid");
@@ -126,8 +135,11 @@ public class ModelGateway {
           })
           .concatWith(Flux.defer(() -> stopped.get() && content.get() ? Flux.empty()
               : Flux.error(new ModelFailure("model_stream_incomplete"))))
+          .doOnCancel(transport::close)
           .timeout(Duration.ofSeconds(version.getTimeoutSeconds()), Flux.error(new ModelFailure("model_timeout")))
+          .doFinally(signal -> transport.close())
           .blockLast();
+      }
       return null;
     });
   }

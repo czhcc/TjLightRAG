@@ -66,7 +66,9 @@ public class DocumentService {
     access.requireAccess(kb, username, true);
     if (filename == null) throw new IllegalArgumentException("Missing filename");
     String source = filename.replace('\\', '/');
-    source = source.substring(source.lastIndexOf('/') + 1);
+    if (source.startsWith("/") || source.contains(":")
+        || Arrays.stream(source.split("/", -1)).anyMatch(part -> part.isBlank() || part.equals("..") || part.equals(".")))
+      throw new IllegalArgumentException("Invalid relative filename");
     String lower = source.toLowerCase(Locale.ROOT);
     String format =
         lower.endsWith(".txt")
@@ -93,6 +95,7 @@ public class DocumentService {
         || overlap > size / 2) throw new IllegalArgumentException("Invalid document settings");
     if (bytes.length == 0) throw new IllegalArgumentException("Empty document");
     if (bytes.length > MAX_BYTES) throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE);
+    jdbc.queryForList("SELECT id FROM rag_knowledge_base WHERE id=? FOR UPDATE", kb);
     String hash = hash(bytes),
         key =
             hash(
@@ -115,7 +118,7 @@ public class DocumentService {
     UUID doc =
         jdbc.queryForObject(
             "INSERT INTO rag_document (knowledge_base_id,id,source_name) VALUES (?,?,?) ON CONFLICT"
-                + " (knowledge_base_id,source_name) DO UPDATE SET source_name=EXCLUDED.source_name"
+                + " (knowledge_base_id,source_name) DO UPDATE SET source_name=EXCLUDED.source_name,deleted=FALSE"
                 + " RETURNING id",
             UUID.class,
             kb,
@@ -169,7 +172,7 @@ public class DocumentService {
           job);
     }
     jdbc.update(
-        "UPDATE rag_document SET current_revision_id=? WHERE knowledge_base_id=? AND id=?",
+        "UPDATE rag_document SET current_revision_id=?,pipeline_requested=TRUE,pipeline_paused=FALSE,pipeline_error=NULL WHERE knowledge_base_id=? AND id=?",
         revision,
         kb,
         doc);
@@ -179,6 +182,12 @@ public class DocumentService {
             UUID.class,
             kb,
             revision);
+    if (duplicate) {
+      jdbc.update("UPDATE rag_ingestion_job SET status='pending',attempts=0,cancel_requested=FALSE,"
+          + " error_code=NULL,lease_token=NULL,lease_owner=NULL,lease_until=NULL,next_attempt_at=NULL,requested_by=?"
+          + " WHERE knowledge_base_id=? AND id=? AND status IN ('failed','cancelled')", user, kb, job);
+    }
+    DocumentWorkflowService.enqueue(jdbc, kb, username, false);
     return new Submission(doc, revision, job, duplicate);
   }
 
@@ -193,14 +202,14 @@ public class DocumentService {
     var rows =
         jdbc.query(
             DOC_SQL
-                + " WHERE d.knowledge_base_id=? ORDER BY d.created_at DESC,d.id LIMIT ? OFFSET ?",
+                + " WHERE d.knowledge_base_id=? AND NOT d.deleted ORDER BY d.created_at DESC,d.id LIMIT ? OFFSET ?",
             this::document,
             kb,
             size,
             (long) page * size);
     long count =
         jdbc.queryForObject(
-            "SELECT COUNT(*) FROM rag_document WHERE knowledge_base_id=?", Long.class, kb);
+            "SELECT COUNT(*) FROM rag_document WHERE knowledge_base_id=? AND NOT deleted", Long.class, kb);
     return new PageSlice<>(rows, count, page, size);
   }
 
@@ -213,7 +222,7 @@ public class DocumentService {
     access.requireAccess(kb, username, false);
     var rows =
         jdbc.query(
-            DOC_SQL + " WHERE d.knowledge_base_id=? AND d.id=?", this::document, kb, document);
+            DOC_SQL + " WHERE d.knowledge_base_id=? AND d.id=? AND NOT d.deleted", this::document, kb, document);
     if (rows.isEmpty()) throw new RagAccessException(404);
     return rows.getFirst();
   }
@@ -315,6 +324,7 @@ public class DocumentService {
         .jobId(rs.getObject("job_id", UUID.class))
         .format(rs.getString("format"))
         .status(rs.getString("status"))
+        .errorCode(rs.getString("error_code"))
         .sizeBytes(rs.getLong("size_bytes"))
         .chunkCount(rs.getLong("chunk_count"))
         .createdAt(rs.getTimestamp("created_at").toInstant())
@@ -328,7 +338,18 @@ public class DocumentService {
 
   private static final String DOC_SQL =
       "SELECT d.id,d.source_name,d.created_at,r.id AS revision_id,r.format,r.size_bytes,j.id AS"
-          + " job_id,j.status,(SELECT COUNT(*) FROM rag_document_chunk l WHERE"
+          + " job_id,CASE WHEN d.pipeline_paused THEN 'paused' WHEN d.pipeline_error IS NOT NULL THEN 'failed'"
+          + " WHEN j.status<>'processed' THEN j.status WHEN NOT d.pipeline_requested AND EXISTS"
+          + " (SELECT 1 FROM rag_knowledge_base b JOIN rag_index_document i ON i.knowledge_base_id=b.id"
+          + " AND i.generation_id=b.active_generation_id WHERE b.id=d.knowledge_base_id AND i.document_id=d.id"
+          + " AND i.revision_id=d.current_revision_id) THEN 'indexed'"
+          + " WHEN d.pipeline_requested AND EXISTS(SELECT 1 FROM rag_document_index_queue q"
+          + " JOIN rag_index_generation g ON g.knowledge_base_id=q.knowledge_base_id AND g.id=q.generation_id"
+          + " JOIN rag_index_document i ON i.knowledge_base_id=g.knowledge_base_id AND i.generation_id=g.id"
+          + " WHERE q.knowledge_base_id=d.knowledge_base_id AND i.document_id=d.id"
+          + " AND i.revision_id=d.current_revision_id AND g.state IN ('pending','building','ready')) THEN 'indexing'"
+          + " WHEN d.pipeline_requested THEN 'waiting_index' ELSE 'processed' END AS status,"
+          + " COALESCE(d.pipeline_error,j.error_code) AS error_code,(SELECT COUNT(*) FROM rag_document_chunk l WHERE"
           + " l.knowledge_base_id=d.knowledge_base_id AND l.revision_id=r.id) AS chunk_count FROM"
           + " rag_document d JOIN rag_document_revision r ON"
           + " r.knowledge_base_id=d.knowledge_base_id AND r.id=d.current_revision_id JOIN"

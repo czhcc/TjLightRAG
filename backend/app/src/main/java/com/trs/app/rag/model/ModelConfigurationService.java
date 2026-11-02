@@ -142,7 +142,7 @@ public class ModelConfigurationService {
       throw new IllegalArgumentException("Invalid model configuration");
   }
 
-  /** Deletes an unreferenced historical version while retaining the latest version. @author czhcc */
+  /** Deletes a historical version after removing unused terminal indexes atomically. @author czhcc */
   @Transactional
   public void delete(UUID id, String actor) {
     admin(actor);
@@ -157,9 +157,39 @@ public class ModelConfigurationService {
         Integer.class, row.get("profile_id"));
     if (latest == null || ((Number) row.get("version")).intValue() >= latest)
       throw new org.springframework.dao.DataIntegrityViolationException("Latest model version is retained");
-    // Foreign keys also fence concurrent binding/index creation; never cascade those references.
+    removeTerminalIndexes(id);
+    // Remaining foreign keys fence bindings, usable indexes and concurrent index creation.
     if (jdbc.update("DELETE FROM rag_model_version WHERE id=?", id) == 0)
       throw new RagAccessException(404);
+  }
+
+  private void removeTerminalIndexes(UUID version) {
+    // Match workflow lock order: knowledge base, then generation, then queue.
+    var bases = jdbc.queryForList("SELECT b.id FROM rag_knowledge_base b WHERE EXISTS"
+        + " (SELECT 1 FROM rag_index_generation g WHERE g.knowledge_base_id=b.id"
+        + " AND ? IN (g.extract_version,g.summary_version,g.embedding_version))"
+        + " ORDER BY b.id FOR UPDATE OF b", UUID.class, version);
+    for (UUID kb : bases) {
+      var generations = jdbc.queryForList("SELECT g.id FROM rag_index_generation g"
+          + " WHERE g.knowledge_base_id=? AND ? IN (g.extract_version,g.summary_version,g.embedding_version)"
+          + " AND (g.state='cancelled' OR (g.state='failed' AND g.retry_at IS NULL))"
+          + " AND NOT EXISTS(SELECT 1 FROM rag_knowledge_base b WHERE b.id=g.knowledge_base_id"
+          + " AND b.active_generation_id=g.id)"
+          + " AND NOT EXISTS(SELECT 1 FROM rag_document_index_queue q WHERE q.knowledge_base_id=g.knowledge_base_id"
+          + " AND q.expected_generation_id=g.id) ORDER BY g.id FOR UPDATE OF g", UUID.class, kb, version);
+      for (UUID generation : generations) {
+        // Keep explicit retry semantics and fence any coordinator that captured the old queue.
+        int detached = jdbc.update("UPDATE rag_document_index_queue q SET generation_id=NULL,"
+            + " error_code=COALESCE(q.error_code,(SELECT error_code FROM rag_index_generation"
+            + " WHERE knowledge_base_id=? AND id=?),'model_version_deleted'),"
+            + " revision=NEXTVAL('rag_document_pipeline_revision') WHERE knowledge_base_id=? AND generation_id=?",
+            kb, generation, kb, generation);
+        if (detached != 0)
+          jdbc.update("UPDATE rag_document SET pipeline_error=COALESCE(pipeline_error,'model_version_deleted')"
+              + " WHERE knowledge_base_id=? AND pipeline_requested AND NOT pipeline_paused AND NOT deleted", kb);
+        jdbc.update("DELETE FROM rag_index_generation WHERE knowledge_base_id=? AND id=?", kb, generation);
+      }
+    }
   }
 
   /** Resolves a captured version without exposing its secret through REST. @author agent */

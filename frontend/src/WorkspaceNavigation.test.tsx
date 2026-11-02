@@ -59,16 +59,16 @@ it("keeps the first-base form and entered name available after a creation failur
   expect(screen.queryByRole("navigation", { name: "功能菜单" })).toBeNull();
 });
 
-it("shows the six ordered sidebar entries and only the selected feature", async () => {
+it("shows four sidebar entries with document processing integrated into the list", async () => {
   const fetch = mockApi();
   render(<Workspace admin onSessionExpired={() => {}} />);
   const nav = within(await screen.findByRole("navigation", { name: "功能菜单" }));
-  const labels = ["知识库问答", "检索证据", "索引构建与切换", "文档管理", "任务管理", "模型配置"];
+  const labels = ["知识库问答", "检索证据", "文档管理", "模型配置"];
   expect(nav.getAllByRole("button").map(button => button.textContent)).toEqual(labels);
   expect(screen.getByRole("heading", { name: "问答内容 kb1" })).toBeTruthy();
   expect(screen.queryByLabelText("文档名称")).toBeNull();
   expect(fetch.mock.calls.some(([url]) => url.includes("/documents") || url.includes("/jobs"))).toBe(false);
-  for (const [label, heading] of [["检索证据", "检索内容"], ["索引构建与切换", "索引内容"], ["文档管理", "文档"], ["任务管理", "任务"], ["模型配置", "模型内容"]]) {
+  for (const [label, heading] of [["检索证据", "检索内容"], ["文档管理", "文档"], ["模型配置", "模型内容"]]) {
     fireEvent.click(nav.getByRole("button", { name: label }));
     await screen.findByRole("heading", { name: heading });
     expect(nav.getByRole("button", { name: label }).getAttribute("aria-current")).toBe("page");
@@ -103,14 +103,15 @@ it("shows a load error without mistaking an unavailable base list for an empty a
   await screen.findByRole("heading", { name: "问答内容 kb1" });
 });
 
-it("loads only the active document or task list", async () => {
+it("loads the document list and stops polling when navigating away", async () => {
   const fetch = mockApi();
   render(<Workspace onSessionExpired={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: "文档管理" }));
   await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.includes("/documents?"))).toBe(true));
   expect(fetch.mock.calls.some(([url]) => url.includes("/jobs?"))).toBe(false);
   fetch.mockClear();
-  fireEvent.click(screen.getByRole("button", { name: "任务管理" }));
-  await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.includes("/jobs?"))).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "知识库问答" }));
+  await screen.findByRole("heading", { name: "问答内容 kb1" });
+  expect(fetch.mock.calls.some(([url]) => url.includes("/jobs?"))).toBe(false);
   expect(fetch.mock.calls.some(([url]) => url.includes("/documents?"))).toBe(false);
 });

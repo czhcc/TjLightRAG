@@ -28,6 +28,61 @@ public class IndexService {
       throw new RagAccessException(403);
   }
 
+  /** Captures a trusted document snapshot for the automatic writer-owned pipeline. @author czhcc */
+  @Transactional
+  public Map<String, Object> createAutomatic(UUID kb, String actor, Map<UUID, UUID> revisions) {
+    access.requireAccess(kb, actor, true);
+    jdbc.queryForList("SELECT id FROM rag_knowledge_base WHERE id=? FOR UPDATE", kb);
+    Map<String, UUID> bindings = models.snapshot();
+    if (!bindings.keySet().containsAll(Set.of("extract", "embedding")))
+      throw new ModelFailure("model_bindings_missing");
+    UUID extract = bindings.get("extract"), summary = bindings.getOrDefault("summary", extract),
+        embedding = bindings.get("embedding"), id = UUID.randomUUID();
+    var vector = models.version(embedding);
+    jdbc.update("INSERT INTO rag_index_generation(knowledge_base_id,id,requested_by,extract_version,"
+        + " summary_version,embedding_version,dimensions,prompt_version,tokenizer,automatic)"
+        + " SELECT ?,?,id,?,?,?,?,?,?,TRUE FROM app_user WHERE username=?", kb, id, extract, summary,
+        embedding, vector.getDimensions(), PROMPT_VERSION, tokenizer.getName(), actor);
+    for (var revision : revisions.entrySet()) {
+      if (jdbc.update("INSERT INTO rag_index_document(knowledge_base_id,generation_id,document_id,revision_id)"
+          + " SELECT ?,?,?,r.id FROM rag_document_revision r JOIN rag_document d"
+          + " ON d.knowledge_base_id=r.knowledge_base_id AND d.id=r.document_id"
+          + " JOIN rag_ingestion_job j ON j.knowledge_base_id=r.knowledge_base_id AND j.revision_id=r.id"
+          + " WHERE r.knowledge_base_id=? AND r.document_id=? AND r.id=? AND NOT d.deleted AND j.status='processed'",
+          kb, id, revision.getKey(), kb, revision.getKey(), revision.getValue()) != 1)
+        throw new ModelFailure("index_inputs_not_ready");
+    }
+    jdbc.update("INSERT INTO rag_index_chunk(knowledge_base_id,generation_id,chunk_id) SELECT DISTINCT"
+        + " d.knowledge_base_id,d.generation_id,dc.chunk_id FROM rag_index_document d JOIN rag_document_chunk dc"
+        + " ON dc.knowledge_base_id=d.knowledge_base_id AND dc.revision_id=d.revision_id"
+        + " WHERE d.knowledge_base_id=? AND d.generation_id=?", kb, id);
+    int count = jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE knowledge_base_id=? AND generation_id=?",
+        Integer.class, kb, id);
+    if (count == 0 || count > 20000) throw new ModelFailure("index_chunk_limit");
+    return get(kb, id, actor);
+  }
+
+  /** Publishes only a complete automatic generation after checking the writer again. @author czhcc */
+  @Transactional
+  public void activateAutomatic(UUID kb, UUID id, UUID expected, String actor) {
+    access.requireAccess(kb, actor, true);
+    var base = jdbc.queryForMap("SELECT active_generation_id FROM rag_knowledge_base WHERE id=? FOR UPDATE", kb);
+    if (!Objects.equals(expected, base.get("active_generation_id"))) throw new RagAccessException(409);
+    var rows = jdbc.queryForList("SELECT id FROM rag_index_generation WHERE knowledge_base_id=? AND id=?"
+        + " AND automatic AND state='ready' AND NOT cancel_requested FOR SHARE", kb, id);
+    if (rows.isEmpty()) throw new RagAccessException(409);
+    integrity(kb, id);
+    jdbc.update("UPDATE rag_knowledge_base SET active_generation_id=? WHERE id=?", id, kb);
+  }
+
+  /** Fences automatic execution immediately; ready snapshots remain immutable and unpublished. @author czhcc */
+  @Transactional
+  public void cancelAutomatic(UUID kb, UUID id, String actor) {
+    access.requireAccess(kb, actor, true);
+    jdbc.update("UPDATE rag_index_generation SET cancel_requested=TRUE,state='cancelled',lease_token=NULL,"
+        + " lease_until=NULL,retry_at=NULL WHERE knowledge_base_id=? AND id=? AND automatic AND state<>'ready'", kb, id);
+  }
+
   /**
    * Captures all current processed revisions and model versions as a new isolated index. @author
    * agent
@@ -47,14 +102,14 @@ public class IndexService {
         jdbc.queryForObject(
             "SELECT EXISTS(SELECT 1 FROM rag_document d JOIN rag_ingestion_job j ON"
                 + " j.knowledge_base_id=d.knowledge_base_id AND j.revision_id=d.current_revision_id"
-                + " WHERE d.knowledge_base_id=? AND j.status<>'processed')",
+                + " WHERE d.knowledge_base_id=? AND NOT d.deleted AND j.status<>'processed')",
             Boolean.class,
             kb))) throw new ModelFailure("index_inputs_not_ready");
     int count =
         jdbc.queryForObject(
             "SELECT COUNT(DISTINCT dc.chunk_id) FROM rag_document d JOIN rag_document_chunk dc ON"
                 + " dc.knowledge_base_id=d.knowledge_base_id AND"
-                + " dc.revision_id=d.current_revision_id WHERE d.knowledge_base_id=?",
+                + " dc.revision_id=d.current_revision_id WHERE d.knowledge_base_id=? AND NOT d.deleted",
             Integer.class,
             kb);
     if (count == 0 || count > 20000)
@@ -76,7 +131,7 @@ public class IndexService {
     jdbc.update(
         "INSERT INTO rag_index_document(knowledge_base_id,generation_id,document_id,revision_id)"
             + " SELECT knowledge_base_id,?,id,current_revision_id FROM rag_document WHERE"
-            + " knowledge_base_id=?",
+            + " knowledge_base_id=? AND NOT deleted",
         id,
         kb);
     jdbc.update(
@@ -269,7 +324,11 @@ public class IndexService {
   /** Checks live fencing and current owner authorization at each stage boundary. @author agent */
   @Transactional
   public void check(IndexLease l) {
-    owner(l.getKnowledgeBaseId(), l.getActor());
+    boolean automatic = Boolean.TRUE.equals(jdbc.queryForObject(
+        "SELECT automatic FROM rag_index_generation WHERE knowledge_base_id=? AND id=?",
+        Boolean.class, l.getKnowledgeBaseId(), l.getId()));
+    if (automatic) access.requireAccess(l.getKnowledgeBaseId(), l.getActor(), true);
+    else owner(l.getKnowledgeBaseId(), l.getActor());
     if (!Boolean.TRUE.equals(
         jdbc.queryForObject(
             "SELECT EXISTS(SELECT 1 FROM rag_index_generation WHERE knowledge_base_id=? AND id=?"
@@ -420,6 +479,10 @@ public class IndexService {
   }
 
   private void integrity(UUID kb, UUID id) {
+    if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM rag_index_document i"
+        + " JOIN rag_document d ON d.knowledge_base_id=i.knowledge_base_id AND d.id=i.document_id"
+        + " WHERE i.knowledge_base_id=? AND i.generation_id=? AND d.deleted)", Boolean.class, kb, id)))
+      throw new ModelFailure("index_contains_deleted_document");
     for (String kind : List.of("chunk", "entity", "relation")) {
       int
           count =
