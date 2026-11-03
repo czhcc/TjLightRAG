@@ -98,7 +98,15 @@ export async function queryStream(
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    let code: string | undefined;
+    try {
+      const data: unknown = await response.json();
+      const error = (data as { error?: unknown } | null)?.error;
+      if (typeof error === "string" && /^(query|retrieval|model)_[a-z_]+$/.test(error)) code = error;
+    } catch { /* A non-JSON failure still preserves its HTTP status. */ }
+    throw new ApiError(response.status, code);
+  }
   if (
     !response.body ||
     !response.headers.get("Content-Type")?.startsWith("text/event-stream")

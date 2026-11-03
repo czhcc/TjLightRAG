@@ -8,7 +8,7 @@ function mockApi(role = "OWNER") {
   const fetch = vi.fn(async (url: string, init?: RequestInit) => ({
     ok: true, status: init?.method === "POST" ? 202 : 200,
     json: async () => url.endsWith("/csrf") ? { token: "csrf" } :
-      url === "/api/knowledge-bases" ? [{ ...base, role }] : { items: [], total: 0, page: 0, size: 20 },
+      url === "/api/knowledge-bases" ? [{ ...base, role }] : url.endsWith("/conversations") ? [] : { items: [], total: 0, page: 0, size: 20 },
   }));
   vi.stubGlobal("fetch", fetch); return fetch;
 }
@@ -43,7 +43,7 @@ it("clears document dialogs and input when changing knowledge bases", async () =
   mockApi();
   const fetch = vi.mocked(globalThis.fetch);
   fetch.mockImplementation(async (input) => ({ ok: true, status: 200, json: async () => String(input) === "/api/knowledge-bases" ?
-    [base, { ...base, id: "kb2", name: "第二知识库" }] : { items: [], total: 0 } }) as Response);
+    [base, { ...base, id: "kb2", name: "第二知识库" }] : String(input).endsWith("/conversations") ? [] : { items: [], total: 0 } }) as Response);
   render(<Workspace onSessionExpired={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: "文档管理" }));
   fireEvent.click(screen.getByRole("button", { name: "提交文本" }));

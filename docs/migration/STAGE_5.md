@@ -6,13 +6,13 @@
 
 固定基线仍为 `aaebfe1bb8d55deb6a4304d357a3bf4c92fcd40a`。本阶段实际读取 `operate.py:kg_query/naive_query/_get_vector_context/_build_context_str`、`utils.py:apply_rerank_if_enabled/normalize_rerank_result/process_chunks_unified` 和现有 `rag_response`。Java 运行时不依赖 Python 服务。
 
-- 回答与预览共享阶段 4 捕获的索引代、三类向量、图谱、来源和完整模板。生成开始时单次捕获回答/重排配置版本；处理中切换全局绑定或激活新代，不改变本次回答的模型与证据。下一请求读取新配置。
+- 回答与预览共享阶段 4 捕获的索引代、三类向量、图谱、来源和完整模板。生成开始时捕获当前知识库的回答/重排配置；处理中切换用途绑定或激活新代，不改变本次回答的模型与证据。下一请求读取新配置。
 - 回答通过 Spring AI `ChatModel`，真实增量输出通过 `StreamingChatModel`，由既有受限 OpenAI 兼容协议适配器提供。供应商必须提供 `/chat/completions`；流式路径要求 SSE，不把完整回答拆分伪装为模型流。
 - 保留上游回答模板，默认 Multiple Paragraphs。只在上下文不为空时调用回答模型；无证据返回固定中/英文拒答，`status=empty`、`llmGenerated=false`。模型/存储失败不能变成无证据成功。
 - 可选重排插入“融合去重、读取完整来源”之后、“chunkTopK、最终预算截断、引用重算”之前；按供应商索引顺序重排，默认分数阈值 0.5。`rerank_score` 与 cosine `score` 分开，保留全部来源，不修改原候选对象。固定上游 `rerank-fixed-response` 的顺序、内容、文件名和分数逐项对照。
 - `enableRerank` 默认 false。请求启用但没有重排绑定时返回 `not_configured` 并保持原顺序；配置可用但无候选返回 `no_candidates`；执行成功返回 `applied`。非法、重复、非整数或越界索引、非有限分数、空返回、超时和 HTTP 错误均明确失败。这与上游部分异常回退行为有意不同，避免无提示地改变结果。
 - 所有回答缓存读写均禁用，响应明确 `cacheStatus=disabled`，不使用 V2 `rag_llm_cache`。也不缓存本阶段关键词或重排输出。因此不存在跨用户、知识库、索引代或模型版本复用回答的路径。后续开启缓存必须单独设计完整隔离键及失效规则。
-- 首期仅单轮；不接收历史、自定义系统指令或客户端缓存开关。未知查询字段返回 400，不静默忽略。`bypass` 不开放。上下文/提示词预览不调用回答模型，但可能调用关键词、向量及启用的重排模型。
+- V13 支持私有多轮对话，通过 conversationId 从服务端读取当前用户、当前知识库的已完成历史，不接收客户端历史、自定义系统指令或缓存开关。未知字段返回 400，bypass 不开放。追问先结合近期历史补全独立检索问题，再检索及生成回答。预览不生成最终回答或保存轮次，但可能调用问题补全、关键词、向量和重排模型。
 
 ## 接口
 
@@ -20,10 +20,15 @@
 
 | 接口 | 行为 |
 | --- | --- |
-| `POST /api/knowledge-bases/{kb}/query` | JSON 回答；`preview=context` 仅上下文，`preview=prompt` 返回实际 system/user 消息 |
+| `POST /api/knowledge-bases/{kb}/query` | JSON 回答；`preview=context` 仅上下文，`preview=prompt` 返回实际 system、历史 user/assistant 及当前 user 消息 |
 | `POST /api/knowledge-bases/{kb}/query/stream` | `fetch` POST SSE；必须提供随机 UUID `requestId`，支持三种 preview 值 |
 | `POST /api/knowledge-bases/{kb}/query/{requestId}/cancel` | 仅取消同知识库、用户名、HTTP 会话下的请求；未知 ID 幂等 204 |
+| `GET /api/knowledge-bases/{kb}/conversations?page=0` | 当前用户私有对话，每页最多 50 个 |
+| `POST /api/knowledge-bases/{kb}/conversations` | 新建私有对话 |
+| `GET /api/knowledge-bases/{kb}/conversations/{id}/turns?before={sequence}` | 最近或较早 50 轮，按时间正序，保留原始来源 |
 | `GET /api/knowledge-bases/{kb}/retrieval/source` | 沿用阶段 4 完整来源元组和历史修订权限校验 |
+
+请求可选 conversationId；省略时兼容独立问答。保存到对话的回答必须提供随机 UUID requestId，同一对话只允许一个运行请求，超时或取消不能发布成功。历史仅选最近 10 个完整问答对，并受最多约 4096 token 及模型上下文预算限制；最新一轮过长时明确缩短，失败和未完成输出不进入历史。
 
 请求继承检索全部限制，新增 `preview=answer|context|prompt`（默认 answer）、`enableRerank`（默认 false）、`minRerankScore`（默认 0.5，范围 0..1）。不提供自动重试或自动重连，避免重复计费。非流式结果返回 answer、status、llmGenerated、answerVersion、rerankVersion、rerankStatus、cacheStatus、完整 retrieval 和引用校验。实际消息只在 prompt 预览返回。
 
@@ -44,9 +49,9 @@ SSE 每帧为 `event: name` 和 JSON `data`，空行结束：
 
 ## 预算、资源与权限
 
-- 保留阶段 4 完整记录预算；问答省略 `maxTotalTokens` 时使用回答模型上下文作为总额，不使用继承的检索默认 16000。显式提供时仍取请求总额和模型上下文的较小值。额外扣除回答模型配置输出超过 1024 的差额和 16 token 消息开销差额，内部检索计划最多 64000；最终检查 `system + user + 32 消息开销 + maxOutputTokens` 不超过有效总额。`retrieval.metadata.answerBudget.maxTotalTokens` 返回有效总额，阶段 4 的 `budget` 描述上下文计划。都是 cl100k_base 估计和配置预留，不冒充供应商账单用量。预算错误码沿 SSE 与预览 HTTP 响应传递，界面显示明确提示，失败流不发送 done。
+- 保留阶段 4 完整记录预算；问答省略 `maxTotalTokens` 时使用回答模型上下文作为总额，不使用继承的检索默认 16000。显式提供时仍取请求总额和模型上下文的较小值。额外扣除回答模型配置输出超过 1024 的差额和 16 token 消息开销差额，内部检索计划最多 64000；多轮请求先为历史及其附加指令预留预算，最终检查 `system + 历史消息 + 当前 user + 消息开销 + maxOutputTokens` 不超过有效总额。`retrieval.metadata.answerBudget.maxTotalTokens` 返回有效总额，阶段 4 的 `budget` 描述上下文计划。都是 cl100k_base 估计和配置预留，不冒充供应商账单用量。预算错误码沿 SSE 与预览 HTTP 响应传递，界面显示明确提示，失败流不发送 done。
 - 预览与生成采取相同模型上限及重排设置；禁止将预览可见但实际不会发送的超预算块作为依据。
-- 输出引用 `[数字]` 对照实际 references，返回 `citedReferenceIds` 与 `unknownReferenceIds`；未知编号不解析为原文，界面提醒。未改写供应商回答，也不声称编号匹配等同于事实已被证据支持。首版答案为纯文本，原文按码点高亮，不执行模型 HTML/Markdown。
+- 输出引用 `[数字]` 对照实际 references，返回 `citedReferenceIds` 与 `unknownReferenceIds`；未知编号不解析为原文，界面提醒。未改写供应商回答，也不声称编号匹配等同于事实已被证据支持。实时和历史答案采用 react-markdown 与 remark-gfm 渲染，支持标题、列表、表格、引用、行内与围栏代码，随流式增量更新；HTML 作为文本转义，默认 URL 安全过滤保留，外部图片仅显示替代文字。原文及证据继续按纯文本与码点高亮显示。
 - 每次模型调用不占长数据库事务。生成前、每段增量和完成前复核知识库权限及原捕获索引代状态；心跳也复核权限。
 - `RAG_QUERY_MAX_CONCURRENCY=4`，范围 1..16，与同步/流式生成共享；同步满额返回 429，已接受的 SSE 请求以 error/query_busy 终止。额外最多 16 个实例内活动流注册，注册满额返回 429，无无限等待队列。
 - `RAG_QUERY_TIMEOUT_SECONDS=180`，范围 1..300，包含流式检索和模型调用；供应商请求期限按剩余时间收紧。检索原有限额继续有效；短 SQL 事务仍单独 15 秒。同步路径在模型调用、阶段切换、返回前检查期限，单次 SQL 受独立事务期限约束。

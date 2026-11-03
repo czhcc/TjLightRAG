@@ -170,6 +170,31 @@ class RetrievalAlgorithmsTest {
   }
 
   @Test
+  void preservesWholeSourceEvidenceWhenGraphConsumesThePromptBudget() {
+    var planner = new ContextPlanner(new Cl100kTokenizer(), algorithms);
+    var req = new RetrievalRequest();
+    req.setMaxTotalTokens(2600);
+    var nodes = new ArrayList<Node>();
+    for (int i = 0; i < 30; i++) nodes.add(new Node("n" + i, "实体" + i, "组织",
+        "图谱描述 ".repeat(20), List.of("c"), 1, null));
+    var graph = planner.graph("问题", req, new Raw(nodes, List.of(), List.of(), List.of()));
+    var chunks = List.of(new Chunk("c", "原文证据 ".repeat(90), "原文.txt", List.of(), null,
+        List.of(new Origin("d", "r", "原文.txt", 0, 0, 100, List.of()))));
+    assertTrue(planner.finish("问题", req, graph, chunks).getChunks().isEmpty());
+    var fitted = planner.reserveEvidence("问题", req, graph, chunks);
+    var result = planner.finish("问题", req, fitted, chunks);
+    assertEquals(1, result.getChunks().size());
+    assertEquals(chunks.getFirst().getContent(), result.getChunks().getFirst().get("content"));
+    assertEquals(1, result.getReferences().size());
+    assertFalse(fitted.getNodes().isEmpty());
+    assertTrue(fitted.getNodes().size() < graph.getNodes().size());
+    assertTrue(result.getBudget().get("totalTokens") <= req.getMaxTotalTokens());
+    assertSame(graph, planner.reserveEvidence("问题", req, graph, List.of()));
+    var oversized = List.of(new Chunk("big", "原文 ".repeat(10000), "大文件.txt", List.of(), null, List.of()));
+    assertSame(graph, planner.reserveEvidence("问题", req, graph, oversized));
+  }
+
+  @Test
   void actualBpeBudgetRechecksReferencesAndFullRenderedPrompt() {
     var tokenizer = new Cl100kTokenizer();
     var planner = new ContextPlanner(tokenizer, algorithms);

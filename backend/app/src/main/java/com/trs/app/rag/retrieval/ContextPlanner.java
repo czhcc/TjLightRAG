@@ -105,6 +105,29 @@ public class ContextPlanner {
   }
 
   /**
+   * Reserves space for the highest-ranked whole source chunk when it fits on its own.
+   * Removes graph tail records in the same order as graph budget pruning. @author czhcc
+   */
+  public GraphSlice reserveEvidence(
+      String query, RetrievalRequest request, GraphSlice graph, List<Chunk> candidates) {
+    if (candidates.isEmpty()) return graph;
+    var first = List.of(candidates.getFirst());
+    if (!finish(query, request, graph, first).getChunks().isEmpty()) return graph;
+    var empty = new GraphSlice(List.of(), List.of());
+    if (finish(query, request, empty, first).getChunks().isEmpty()) return graph;
+    var nodes = new ArrayList<>(graph.getNodes());
+    var edges = new ArrayList<>(graph.getEdges());
+    GraphSlice fitted = graph;
+    while (finish(query, request, fitted, first).getChunks().isEmpty()) {
+      if (!edges.isEmpty()) edges.removeLast();
+      else if (!nodes.isEmpty()) nodes.removeLast();
+      else return empty;
+      fitted = new GraphSlice(List.copyOf(nodes), List.copyOf(edges));
+    }
+    return fitted;
+  }
+
+  /**
    * Performs approximate then exact reference-aware prefix truncation, including the full
    * prompt. @author agent
    */

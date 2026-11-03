@@ -18,7 +18,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  */
 @Component
 public class QueryStreams {
-  private final QueryService service;
+  private final ConversationQueries service;
   private final KnowledgeBaseService access;
   private final int timeout;
   private final ConcurrentMap<Key, Run> runs = new ConcurrentHashMap<>();
@@ -49,7 +49,7 @@ public class QueryStreams {
 
   /** Uses one overall stream deadline, including retrieval and provider reads. @author agent */
   public QueryStreams(
-      QueryService service,
+      ConversationQueries service,
       KnowledgeBaseService access,
       @Value("${rag.query.timeout-seconds:180}") int timeout) {
     this.service = service;
