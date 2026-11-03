@@ -18,7 +18,7 @@ function api(errorCode?: string) {
 }
 
 it.each([
-  ["model_timeout", "模型调用超时，请增大所用模型的超时秒数，保存新版本及用途绑定后点击运行重试。"],
+  ["model_timeout", "模型调用超时，请增大所用模型的超时秒数，保存配置后重新构建索引。"],
   ["model_truncated_or_invalid", "模型输出被截断或返回结果不完整，请检查最大输出 token、上下文限制及模型服务后点击运行重试。"],
   ["model_http_error", "模型服务返回 HTTP 错误，请检查服务地址、访问权限及服务端日志后点击运行重试。"],
   ["extraction_invalid_json", "模型返回的抽取 JSON 不符合实体或关系格式，请检查文本模型后点击运行重试。"],

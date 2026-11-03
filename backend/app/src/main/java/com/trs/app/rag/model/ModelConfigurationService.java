@@ -1,13 +1,13 @@
 package com.trs.app.rag.model;
 
-import com.trs.app.rag.RagAccessException;
+import com.trs.app.rag.*;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Versioned administrator model configuration and purpose bindings. @author agent */
+/** Editable model catalog and knowledge-base purpose settings. @author czhcc */
 @Service
 @RequiredArgsConstructor
 public class ModelConfigurationService {
@@ -15,109 +15,59 @@ public class ModelConfigurationService {
   private final SecretVault vault;
   private final EndpointPolicy policy;
   private final ModelGateway gateway;
+  private final KnowledgeBaseService access;
   private final tools.jackson.databind.json.JsonMapper json = tools.jackson.databind.json.JsonMapper.builder().build();
-  public static final Set<String> ROLES =
-      Set.of("extract", "summary", "keywords", "answer", "embedding", "rerank");
+  public static final Set<String> ROLES = Set.of("extract", "summary", "keywords", "answer", "embedding", "rerank");
 
-  /** Rechecks the database administrator flag on every privileged operation. @author agent */
+  /** Checks the current platform administrator flag. @author czhcc */
   public void admin(String actor) {
-    if (!Boolean.TRUE.equals(
-        jdbc.queryForObject(
-            "SELECT EXISTS(SELECT 1 FROM app_user WHERE username=? AND is_admin)",
-            Boolean.class,
-            actor))) throw new RagAccessException(403);
+    if (!Boolean.TRUE.equals(jdbc.queryForObject(
+        "SELECT EXISTS(SELECT 1 FROM app_user WHERE username=? AND is_admin)", Boolean.class, actor)))
+      throw new RagAccessException(403);
   }
 
-  /** Returns only masked latest profile versions. @author agent */
+  /** Lists one masked row per editable model, without configuration history. @author czhcc */
   public List<Map<String, Object>> list(String actor) {
     admin(actor);
-    return jdbc.query(
-        "SELECT v.*,p.name,p.kind FROM rag_model_profile p JOIN rag_model_version v ON"
-            + " v.profile_id=p.id ORDER BY p.created_at DESC,p.id,v.version DESC LIMIT 500",
-        (rs, n) -> view(rs));
+    return jdbc.query("SELECT c.*,p.name,p.kind FROM rag_model_configuration c JOIN rag_model_profile p ON p.id=c.id ORDER BY p.created_at DESC,p.id",
+      (rs, n) -> {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", rs.getObject("id")); m.put("profileId", rs.getObject("id"));
+        for (String key : List.of("name", "kind", "model")) m.put(key, rs.getString(key));
+        m.put("baseUrl", rs.getString("base_url"));
+        m.put("keyConfigured", !rs.getString("secret_cipher").isEmpty());
+        m.put("dimensions", rs.getInt("dimensions")); m.put("contextTokens", rs.getInt("context_tokens"));
+        m.put("maxOutputTokens", rs.getInt("max_output_tokens")); m.put("timeoutSeconds", rs.getInt("timeout_seconds"));
+        m.put("extraBody", ModelExtraParameters.read(rs.getString("extra_body")));
+        return m;
+      });
   }
 
-  /** Reads masked immutable version history for a profile. @author agent */
-  public List<Map<String, Object>> history(UUID profile, String actor) {
-    admin(actor);
-    return jdbc.query(
-        "SELECT v.*,p.name,p.kind FROM rag_model_profile p JOIN rag_model_version v ON"
-            + " v.profile_id=p.id WHERE p.id=? ORDER BY v.version DESC",
-        (rs, n) -> view(rs),
-        profile);
-  }
-
-  private Map<String, Object> view(java.sql.ResultSet rs) throws java.sql.SQLException {
-    Map<String, Object> m = new LinkedHashMap<>();
-    m.put("id", rs.getObject("id"));
-    m.put("profileId", rs.getObject("profile_id"));
-    m.put("name", rs.getString("name"));
-    m.put("kind", rs.getString("kind"));
-    m.put("version", rs.getInt("version"));
-    m.put("baseUrl", rs.getString("base_url"));
-    m.put("model", rs.getString("model"));
-    m.put("keyConfigured", !rs.getString("secret_cipher").isEmpty());
-    m.put("dimensions", rs.getInt("dimensions"));
-    m.put("contextTokens", rs.getInt("context_tokens"));
-    m.put("maxOutputTokens", rs.getInt("max_output_tokens"));
-    m.put("timeoutSeconds", rs.getInt("timeout_seconds"));
-    m.put("extraBody", ModelExtraParameters.read(rs.getString("extra_body")));
-    return m;
-  }
-
-  /**
-   * Appends an immutable version; an empty key preserves the previous encrypted key. @author agent
-   */
+  /** Creates or directly updates current settings, preserving a blank submitted key. @author czhcc */
   @Transactional
   public Map<String, Object> save(UUID profile, ModelRequest r, String actor) {
-    admin(actor);
-    validate(r);
-    policy.validate(r.getBaseUrl());
-    int version = 1;
+    admin(actor); validate(r); policy.validate(r.getBaseUrl());
     String cipher = "";
     if (profile == null) {
       profile = UUID.randomUUID();
-      jdbc.update(
-          "INSERT INTO rag_model_profile(id,name,kind) VALUES (?,?,?)",
-          profile,
-          r.getName().strip(),
-          r.getKind());
+      jdbc.update("INSERT INTO rag_model_profile(id,name,kind) VALUES (?,?,?)", profile, r.getName().strip(), r.getKind());
     } else {
-      var rows =
-          jdbc.queryForList("SELECT kind FROM rag_model_profile WHERE id=? FOR UPDATE", profile);
+      var rows = jdbc.queryForList("SELECT p.kind,c.secret_cipher FROM rag_model_profile p JOIN rag_model_configuration c ON c.id=p.id WHERE p.id=? FOR UPDATE OF p", profile);
       if (rows.isEmpty()) throw new RagAccessException(404);
-      if (!rows.getFirst().get("kind").equals(r.getKind()))
-        throw new IllegalArgumentException("Cannot change model kind");
+      if (!r.getKind().equals(rows.getFirst().get("kind"))) throw new IllegalArgumentException("Cannot change model kind");
+      cipher = (String) rows.getFirst().get("secret_cipher");
       jdbc.update("UPDATE rag_model_profile SET name=? WHERE id=?", r.getName().strip(), profile);
-      var old =
-          jdbc.queryForMap(
-              "SELECT version,secret_cipher FROM rag_model_version WHERE profile_id=? ORDER BY"
-                  + " version DESC LIMIT 1",
-              profile);
-      version = ((Number) old.get("version")).intValue() + 1;
-      cipher = (String) old.get("secret_cipher");
     }
     if (r.isClearApiKey()) cipher = "";
-    else if (r.getApiKey() != null && !r.getApiKey().isBlank())
-      cipher = vault.encrypt(r.getApiKey(), profile);
-    UUID id = UUID.randomUUID();
-    String url = r.getBaseUrl().replaceAll("/+$", "");
-    jdbc.update(
-        "INSERT INTO"
-            + " rag_model_version(id,profile_id,version,base_url,model,secret_cipher,dimensions,context_tokens,max_output_tokens,timeout_seconds,extra_body)"
-            + " VALUES (?,?,?,?,?,?,?,?,?,?,?::JSONB)",
-        id,
-        profile,
-        version,
-        url,
-        r.getModel().strip(),
-        cipher,
-        r.getDimensions(),
-        r.getContextTokens(),
-        r.getMaxOutputTokens(),
-        r.getTimeoutSeconds(),
-        json.writeValueAsString(ModelExtraParameters.copy(r.getExtraBody())));
-    return history(profile, actor).getFirst();
+    else if (r.getApiKey() != null && !r.getApiKey().isBlank()) cipher = vault.encrypt(r.getApiKey(), profile);
+    jdbc.update("INSERT INTO rag_model_configuration(id,base_url,model,secret_cipher,dimensions,context_tokens,max_output_tokens,timeout_seconds,extra_body)"
+      + " VALUES (?,?,?,?,?,?,?,?,?::JSONB) ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url,model=EXCLUDED.model,"
+      + " secret_cipher=EXCLUDED.secret_cipher,dimensions=EXCLUDED.dimensions,context_tokens=EXCLUDED.context_tokens,"
+      + " max_output_tokens=EXCLUDED.max_output_tokens,timeout_seconds=EXCLUDED.timeout_seconds,extra_body=EXCLUDED.extra_body",
+      profile, r.getBaseUrl().replaceAll("/+$", ""), r.getModel().strip(), cipher, r.getDimensions(), r.getContextTokens(),
+      r.getMaxOutputTokens(), r.getTimeoutSeconds(), json.writeValueAsString(ModelExtraParameters.copy(r.getExtraBody())));
+    UUID saved = profile;
+    return list(actor).stream().filter(m -> saved.equals(m.get("id"))).findFirst().orElseThrow();
   }
 
   private void validate(ModelRequest r) {
@@ -148,152 +98,102 @@ public class ModelConfigurationService {
       throw new IllegalArgumentException("Extensions require a text model");
   }
 
-  /** Deletes a historical version after removing unused terminal indexes atomically. @author czhcc */
+  /** Deletes an unbound current model; immutable index inputs remain available. @author czhcc */
   @Transactional
   public void delete(UUID id, String actor) {
     admin(actor);
-    // Serialize against saves and other deletions so version numbers cannot be reused.
-    var rows = jdbc.queryForList(
-        "SELECT v.profile_id,v.version FROM rag_model_version v JOIN rag_model_profile p"
-            + " ON p.id=v.profile_id WHERE v.id=? FOR UPDATE OF p", id);
-    if (rows.isEmpty()) throw new RagAccessException(404);
-    var row = rows.getFirst();
-    Integer latest = jdbc.queryForObject(
-        "SELECT MAX(version) FROM rag_model_version WHERE profile_id=?",
-        Integer.class, row.get("profile_id"));
-    if (latest == null || ((Number) row.get("version")).intValue() >= latest)
-      throw new org.springframework.dao.DataIntegrityViolationException("Latest model version is retained");
-    removeTerminalIndexes(id);
-    // Remaining foreign keys fence bindings, usable indexes and concurrent index creation.
-    if (jdbc.update("DELETE FROM rag_model_version WHERE id=?", id) == 0)
-      throw new RagAccessException(404);
+    if (jdbc.update("DELETE FROM rag_model_profile WHERE id=?", id) == 0) throw new RagAccessException(404);
   }
 
-  private void removeTerminalIndexes(UUID version) {
-    // Match workflow lock order: knowledge base, then generation, then queue.
-    var bases = jdbc.queryForList("SELECT b.id FROM rag_knowledge_base b WHERE EXISTS"
-        + " (SELECT 1 FROM rag_index_generation g WHERE g.knowledge_base_id=b.id"
-        + " AND ? IN (g.extract_version,g.summary_version,g.embedding_version))"
-        + " ORDER BY b.id FOR UPDATE OF b", UUID.class, version);
-    for (UUID kb : bases) {
-      var generations = jdbc.queryForList("SELECT g.id FROM rag_index_generation g"
-          + " WHERE g.knowledge_base_id=? AND ? IN (g.extract_version,g.summary_version,g.embedding_version)"
-          + " AND (g.state='cancelled' OR (g.state='failed' AND g.retry_at IS NULL))"
-          + " AND NOT EXISTS(SELECT 1 FROM rag_knowledge_base b WHERE b.id=g.knowledge_base_id"
-          + " AND b.active_generation_id=g.id)"
-          + " AND NOT EXISTS(SELECT 1 FROM rag_document_index_queue q WHERE q.knowledge_base_id=g.knowledge_base_id"
-          + " AND q.expected_generation_id=g.id) ORDER BY g.id FOR UPDATE OF g", UUID.class, kb, version);
-      for (UUID generation : generations) {
-        // Keep explicit retry semantics and fence any coordinator that captured the old queue.
-        int detached = jdbc.update("UPDATE rag_document_index_queue q SET generation_id=NULL,"
-            + " error_code=COALESCE(q.error_code,(SELECT error_code FROM rag_index_generation"
-            + " WHERE knowledge_base_id=? AND id=?),'model_version_deleted'),"
-            + " revision=NEXTVAL('rag_document_pipeline_revision') WHERE knowledge_base_id=? AND generation_id=?",
-            kb, generation, kb, generation);
-        if (detached != 0)
-          jdbc.update("UPDATE rag_document SET pipeline_error=COALESCE(pipeline_error,'model_version_deleted')"
-              + " WHERE knowledge_base_id=? AND pipeline_requested AND NOT pipeline_paused AND NOT deleted", kb);
-        jdbc.update("DELETE FROM rag_index_generation WHERE knowledge_base_id=? AND id=?", kb, generation);
-      }
-    }
-  }
-
-  /** Resolves a captured version without exposing its secret through REST. @author agent */
+  /** Reads a captured index model or a current configuration only inside the server. @author czhcc */
   public ModelVersion version(UUID id) {
-    var rows =
-        jdbc.query(
-            "SELECT v.*,p.kind FROM rag_model_version v JOIN rag_model_profile p ON"
-                + " p.id=v.profile_id WHERE v.id=?",
-            (rs, n) ->
-                new ModelVersion(
-                    id,
-                    rs.getObject("profile_id", UUID.class),
-                    rs.getString("kind"),
-                    rs.getString("base_url"),
-                    rs.getString("model"),
-                    rs.getString("secret_cipher"),
-                    rs.getInt("dimensions"),
-                    rs.getInt("context_tokens"),
-                    rs.getInt("max_output_tokens"),
-                    rs.getInt("timeout_seconds"),
-                    ModelExtraParameters.read(rs.getString("extra_body"))),
-            id);
+    var rows = jdbc.query("SELECT c.*,c.id AS profile_id,p.kind FROM rag_model_configuration c JOIN rag_model_profile p ON p.id=c.id WHERE c.id=?", (rs, n) -> model(rs), id);
+    if (rows.isEmpty()) rows = jdbc.query("SELECT * FROM rag_index_model_snapshot WHERE id=?", (rs, n) -> model(rs), id);
     if (rows.isEmpty()) throw new RagAccessException(404);
     return rows.getFirst();
   }
 
-  /** Reads global role bindings for an administrator. @author agent */
-  public Map<String, UUID> bindings(String actor) {
-    admin(actor);
-    return snapshot();
+  private ModelVersion model(java.sql.ResultSet rs) throws java.sql.SQLException {
+    return new ModelVersion(rs.getObject("id", UUID.class), rs.getObject("profile_id", UUID.class), rs.getString("kind"),
+      rs.getString("base_url"), rs.getString("model"), rs.getString("secret_cipher"), rs.getInt("dimensions"),
+      rs.getInt("context_tokens"), rs.getInt("max_output_tokens"), rs.getInt("timeout_seconds"), ModelExtraParameters.read(rs.getString("extra_body")));
   }
 
-  /** Captures immutable binding IDs for one new generation. @author agent */
-  public Map<String, UUID> snapshot() {
+  /** Returns current purpose IDs for one knowledge base, with no global fallback. @author czhcc */
+  public Map<String, UUID> snapshot(UUID kb) {
     Map<String, UUID> result = new LinkedHashMap<>();
-    jdbc.query(
-        "SELECT role,version_id FROM rag_model_binding ORDER BY role",
-        rs -> {
-          result.put(rs.getString("role"), rs.getObject("version_id", UUID.class));
-        });
+    jdbc.query("SELECT role,model_id FROM rag_knowledge_base_model_binding WHERE knowledge_base_id=? ORDER BY role",
+      rs -> { result.put(rs.getString("role"), rs.getObject("model_id", UUID.class)); }, kb);
     return result;
   }
 
-  /**
-   * Atomically updates selected role bindings, without changing existing generations. @author agent
-   */
+  /** Captures immutable execution parameters only when building an index. @author czhcc */
   @Transactional
-  public void bind(Map<String, UUID> values, String actor) {
-    admin(actor);
+  public Map<String, UUID> captureIndexBindings(UUID kb) {
+    Map<String, UUID> current = snapshot(kb), captured = new LinkedHashMap<>();
+    var ids = current.entrySet().stream().filter(e -> Set.of("extract", "summary", "embedding").contains(e.getKey()))
+      .map(Map.Entry::getValue).distinct().sorted().toList();
+    for (UUID id : ids) {
+      jdbc.queryForList("SELECT id FROM rag_model_profile WHERE id=? FOR UPDATE", id);
+      var v = version(id);
+      String extra = json.writeValueAsString(v.getExtraBody());
+      var existing = jdbc.queryForList("SELECT id FROM rag_index_model_snapshot WHERE profile_id=? AND kind=? AND base_url=?"
+        + " AND model=? AND secret_cipher=? AND dimensions=? AND context_tokens=? AND max_output_tokens=? AND timeout_seconds=?"
+        + " AND extra_body=?::JSONB ORDER BY created_at,id LIMIT 1", UUID.class, id, v.getKind(), v.getBaseUrl(), v.getModel(),
+        v.getCipher(), v.getDimensions(), v.getContextTokens(), v.getMaxOutputTokens(), v.getTimeoutSeconds(), extra);
+      UUID frozen = existing.isEmpty() ? UUID.randomUUID() : existing.getFirst();
+      if (existing.isEmpty()) jdbc.update("INSERT INTO rag_index_model_snapshot(id,profile_id,kind,base_url,model,secret_cipher,dimensions,context_tokens,max_output_tokens,timeout_seconds,extra_body) VALUES (?,?,?,?,?,?,?,?,?,?,?::JSONB)",
+        frozen, id, v.getKind(), v.getBaseUrl(), v.getModel(), v.getCipher(), v.getDimensions(), v.getContextTokens(), v.getMaxOutputTokens(), v.getTimeoutSeconds(), extra);
+      for (var e : current.entrySet()) if (e.getValue().equals(id) && Set.of("extract", "summary", "embedding").contains(e.getKey())) captured.put(e.getKey(), frozen);
+    }
+    return captured;
+  }
+
+  /** Reads bindings after checking knowledge-base membership. @author czhcc */
+  public Map<String, UUID> bindings(UUID kb, String actor) {
+    access.requireAccess(kb, actor, false); return snapshot(kb);
+  }
+
+  /** Offers only names and types to members selecting models, without credentials. @author czhcc */
+  public List<Map<String, Object>> options(UUID kb, String actor) {
+    access.requireAccess(kb, actor, false);
+    return jdbc.queryForList("SELECT p.id,p.name,p.kind FROM rag_model_profile p ORDER BY p.name,p.id");
+  }
+
+  /** Updates this knowledge base's uses; only its owner can change shared execution policy. @author czhcc */
+  @Transactional
+  public void bind(UUID kb, Map<String, UUID> values, String actor) {
+    if (access.requireAccess(kb, actor, false) != KnowledgeRole.OWNER) throw new RagAccessException(403);
+    jdbc.queryForList("SELECT id FROM rag_knowledge_base WHERE id=? FOR UPDATE", kb);
     if (values == null || values.size() > 6) throw new IllegalArgumentException();
     for (var e : values.entrySet()) {
       if (!ROLES.contains(e.getKey())) throw new IllegalArgumentException();
       if (e.getValue() == null) {
-        jdbc.update("DELETE FROM rag_model_binding WHERE role=?", e.getKey());
-        continue;
+        jdbc.update("DELETE FROM rag_knowledge_base_model_binding WHERE knowledge_base_id=? AND role=?", kb, e.getKey());
+      } else {
+        var v = version(e.getValue());
+        String kind = e.getKey().equals("embedding") ? "EMBEDDING" : e.getKey().equals("rerank") ? "RERANK" : "CHAT";
+        if (!kind.equals(v.getKind())) throw new IllegalArgumentException("Incompatible model purpose");
+        jdbc.update("INSERT INTO rag_knowledge_base_model_binding(knowledge_base_id,role,model_id) VALUES (?,?,?)"
+          + " ON CONFLICT (knowledge_base_id,role) DO UPDATE SET model_id=EXCLUDED.model_id", kb, e.getKey(), e.getValue());
       }
-      var v = version(e.getValue());
-      String kind =
-          e.getKey().equals("embedding")
-              ? "EMBEDDING"
-              : e.getKey().equals("rerank") ? "RERANK" : "CHAT";
-      if (!v.getKind().equals(kind))
-        throw new IllegalArgumentException("Incompatible model purpose");
-      jdbc.update(
-          "INSERT INTO rag_model_binding(role,version_id) VALUES (?,?) ON CONFLICT (role) DO UPDATE"
-              + " SET version_id=EXCLUDED.version_id",
-          e.getKey(),
-          e.getValue());
     }
   }
 
-  /**
-   * Makes a bounded wire-protocol connectivity probe; never returns provider payloads. @author
-   * agent
-   */
+  /** Tests the current configuration with the supplier without returning provider payloads. @author czhcc */
   public Map<String, Object> test(UUID id, String actor) {
-    admin(actor);
-    var v = version(id);
-    long begin = System.nanoTime();
+    admin(actor); var v = version(id); long begin = System.nanoTime();
     switch (v.getKind()) {
       case "CHAT" -> gateway.chat(v, List.of(Map.of("role", "user", "content", "Reply with OK.")));
       case "EMBEDDING" -> gateway.embed(v, "connectivity test");
       case "RERANK" -> gateway.rerank(v, "test", List.of("test"));
       default -> throw new IllegalArgumentException();
     }
-    return Map.of(
-        "success", true, "elapsedMs", (System.nanoTime() - begin) / 1000000, "kind", v.getKind());
+    return Map.of("success", true, "elapsedMs", (System.nanoTime() - begin) / 1000000, "kind", v.getKind());
   }
 
-  /** Reports nonsecret model deployment prerequisites. @author agent */
+  /** Reports nonsecret deployment readiness. @author czhcc */
   public Map<String, Object> status(String actor) {
-    admin(actor);
-    return Map.of(
-        "masterKeyConfigured",
-        vault.configured(),
-        "protocol",
-        "openai-compatible",
-        "tokenizer",
-        "cl100k_base");
+    admin(actor); return Map.of("masterKeyConfigured", vault.configured(), "protocol", "openai-compatible", "tokenizer", "cl100k_base");
   }
 }

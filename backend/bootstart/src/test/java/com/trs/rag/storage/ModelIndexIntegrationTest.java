@@ -84,7 +84,7 @@ class ModelIndexIntegrationTest {
 
   @BeforeEach
   void setup() throws Exception {
-    jdbc.update("DELETE FROM rag_model_binding");
+    jdbc.update("DELETE FROM rag_knowledge_base_model_binding");
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext(
         "/v1/",
@@ -250,7 +250,7 @@ class ModelIndexIntegrationTest {
   void bind(String embedding) {
     var chat = config("CHAT", "chat", 0);
     var embed = config("EMBEDDING", embedding, embedding.endsWith("4") ? 4 : 3);
-    models.bind(
+    models.bind(kb,
         new HashMap<>(Map.of("extract", id(chat), "summary", id(chat), "embedding", id(embed))),
         "admin");
   }
@@ -498,20 +498,20 @@ class ModelIndexIntegrationTest {
   }
 
   @Test
-  void secretIsEncryptedMaskedVersionedAndAdminOnly() {
+  void secretIsEncryptedMaskedEditableAndAdminOnly() {
     var first = config("CHAT", "chat", 0);
     String serialized = json.writeValueAsString(first);
     assertFalse(serialized.contains("test-private-key"));
     UUID version = id(first);
     String cipher =
         jdbc.queryForObject(
-            "SELECT secret_cipher FROM rag_model_version WHERE id=?", String.class, version);
+            "SELECT secret_cipher FROM rag_model_configuration WHERE id=?", String.class, version);
     assertNotEquals("test-private-key", cipher);
     var update = request("CHAT", "changed", 0);
     update.setApiKey("");
     var second = models.save(UUID.fromString(first.get("profileId").toString()), update, "admin");
-    assertNotEquals(version, id(second));
-    assertEquals(2, second.get("version"));
+    assertEquals(version, id(second));
+    assertFalse(second.containsKey("version"));
     assertEquals(true, second.get("keyConfigured"));
     assertThrows(RagAccessException.class, () -> models.list("unknown"));
     var invalid = request("CHAT", "bad", 0);
@@ -520,35 +520,14 @@ class ModelIndexIntegrationTest {
   }
 
   @Test
-  void deletionPreservesBindingsIndexesAndVersionNumbers() {
-    var first = config("CHAT", "chat-delete", 0);
-    UUID profile = UUID.fromString(first.get("profileId").toString());
-    var second = models.save(profile, request("CHAT", "chat-updated", 0), "admin");
-    UUID old = id(first);
-    models.bind(Map.of("answer", old), "admin");
-    assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
-        () -> models.delete(old, "admin"));
-    assertEquals(old, models.bindings("admin").get("answer"));
-    models.bind(Collections.singletonMap("answer", null), "admin");
-    models.delete(old, "admin");
-    assertThrows(RagAccessException.class, () -> models.version(old));
-    assertEquals(1, models.history(profile, "admin").size());
-    assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
-        () -> models.delete(id(second), "admin"));
-    assertEquals(3, models.save(profile, request("CHAT", "chat-third", 0), "admin").get("version"));
-
-    bind("embed3");
-    ingest();
-    UUID generation = id(indexes.create(kb, "admin"));
-    UUID embedding = jdbc.queryForObject(
-        "SELECT embedding_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
-    var captured = models.version(embedding);
-    var replacement = models.save(captured.getProfileId(), request("EMBEDDING", "embed4", 4), "admin");
-    models.bind(Map.of("embedding", id(replacement)), "admin");
-    assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
-        () -> models.delete(embedding, "admin"));
-    assertEquals(embedding, jdbc.queryForObject(
-        "SELECT embedding_version FROM rag_index_generation WHERE id=?", UUID.class, generation));
+  void boundModelCannotBeDeletedUntilThisKnowledgeBaseUnbindsIt() {
+    UUID model = id(config("CHAT", "delete-current", 0));
+    models.bind(kb, Map.of("answer", model), "admin");
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(model, "admin"));
+    assertEquals(model, models.bindings(kb, "admin").get("answer"));
+    models.bind(kb, Collections.singletonMap("answer", null), "admin");
+    models.delete(model, "admin");
+    assertThrows(RagAccessException.class, () -> models.version(model));
   }
 
   private long queueRevision() {
@@ -556,71 +535,16 @@ class ModelIndexIntegrationTest {
   }
 
   @Test
-  void deletingOldModelCleansTerminalIndexesAndFencesTheDocumentQueue() {
-    bind("embed3");
-    ingest();
-    UUID failed = id(indexes.create(kb, "admin"));
-    UUID cancelled = id(indexes.create(kb, "admin"));
-    UUID old = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, failed);
-    var captured = models.version(old);
-    UUID replacement = id(models.save(captured.getProfileId(), request("CHAT", "replacement", 0), "admin"));
-    models.bind(Map.of("extract", replacement, "summary", replacement), "admin");
-    jdbc.update("UPDATE rag_index_generation SET state='failed',error_code='model_timeout',retry_at=NULL WHERE id=?", failed);
-    jdbc.update("UPDATE rag_index_generation SET state='cancelled' WHERE id=?", cancelled);
-    jdbc.update("UPDATE rag_document_index_queue SET generation_id=?,error_code='model_timeout' WHERE knowledge_base_id=?", failed, kb);
-    long revision = queueRevision();
-    models.delete(old, "admin");
-    assertThrows(RagAccessException.class, () -> models.version(old));
-    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_generation WHERE id IN (?,?)", Integer.class, failed, cancelled));
-    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id IN (?,?)", Integer.class, failed, cancelled));
-    var queue = jdbc.queryForMap("SELECT generation_id,error_code,revision FROM rag_document_index_queue WHERE knowledge_base_id=?", kb);
-    assertNull(queue.get("generation_id"));
-    assertEquals("model_timeout", queue.get("error_code"));
-    assertTrue(((Number) queue.get("revision")).longValue() > revision);
-    workflow.failed(kb, revision, failed, "stale_error");
-    assertEquals("model_timeout", jdbc.queryForObject("SELECT error_code FROM rag_document_index_queue WHERE knowledge_base_id=?", String.class, kb));
-    UUID document = jdbc.queryForObject("SELECT id FROM rag_document WHERE knowledge_base_id=?", UUID.class, kb);
-    workflow.action(kb, document, "admin", "run");
-    workflow.advance(kb, queueRevision());
-    assertEquals(replacement, jdbc.queryForObject("SELECT g.extract_version FROM rag_document_index_queue q JOIN rag_index_generation g"
-        + " ON g.knowledge_base_id=q.knowledge_base_id AND g.id=q.generation_id WHERE q.knowledge_base_id=?", UUID.class, kb));
-  }
-
-  @Test
-  void modelDeletionKeepsLiveReadyRetryingAndActiveIndexes() {
-    bind("embed3");
-    ingest();
+  void deletingCurrentModelDoesNotDeleteOrMutateCapturedIndexInputs() {
+    bind("embed3"); ingest();
     UUID generation = id(indexes.create(kb, "admin"));
-    UUID old = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
-    var captured = models.version(old);
-    UUID replacement = id(models.save(captured.getProfileId(), request("CHAT", "replacement", 0), "admin"));
-    models.bind(Map.of("extract", replacement, "summary", replacement), "admin");
-    for (String state : List.of("pending", "building", "ready", "failed")) {
-      jdbc.update("UPDATE rag_index_generation SET state=?,retry_at=CURRENT_TIMESTAMP WHERE id=?", state, generation);
-      assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(old, "admin"));
-      assertEquals(state, state(generation));
-    }
-    jdbc.update("UPDATE rag_index_generation SET retry_at=NULL WHERE id=?", generation);
-    jdbc.update("UPDATE rag_knowledge_base SET active_generation_id=? WHERE id=?", generation, kb);
-    assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(old, "admin"));
-    assertEquals(generation, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
-  }
-
-  @Test
-  void boundModelDeletionRollsBackTerminalIndexCleanup() {
-    bind("embed3");
-    ingest();
-    UUID generation = id(indexes.create(kb, "admin"));
-    UUID old = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
-    var captured = models.version(old);
-    models.save(captured.getProfileId(), request("CHAT", "replacement", 0), "admin");
-    jdbc.update("UPDATE rag_index_generation SET state='cancelled' WHERE id=?", generation);
-    jdbc.update("UPDATE rag_document_index_queue SET generation_id=? WHERE knowledge_base_id=?", generation, kb);
-    long revision = queueRevision();
-    assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(old, "admin"));
-    assertEquals("cancelled", state(generation));
-    assertEquals(revision, queueRevision());
-    assertEquals(generation, jdbc.queryForObject("SELECT generation_id FROM rag_document_index_queue WHERE knowledge_base_id=?", UUID.class, kb));
+    UUID snapshot = jdbc.queryForObject("SELECT extract_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
+    var captured = models.version(snapshot);
+    models.bind(kb, new HashMap<>(Map.of("extract", id(config("CHAT", "replacement", 0)),
+        "summary", id(config("CHAT", "replacement-summary", 0)))), "admin");
+    models.delete(captured.getProfileId(), "admin");
+    assertEquals(captured.getModel(), models.version(snapshot).getModel());
+    assertEquals(generation, jdbc.queryForObject("SELECT id FROM rag_index_generation WHERE id=?", UUID.class, generation));
   }
 
   @Test
@@ -808,7 +732,7 @@ class ModelIndexIntegrationTest {
   }
 
   @Test
-  void extensionParametersAreVersionedAndAppliedToProbesAndExtraction() {
+  void editedExtensionParametersApplyToProbesAndNewExtraction() {
     bind("embed3");
     var request = request("CHAT", "extensions", 0);
     var extensions = Map.<String, Object>of("chat_template_kwargs", Map.of("enable_thinking", false), "top_p", 0.8);
@@ -819,10 +743,12 @@ class ModelIndexIntegrationTest {
     assertEquals(extensions, models.version(old).getExtraBody());
     request.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", true)));
     models.save(profile, request, "admin");
-    assertEquals(extensions, models.version(old).getExtraBody());
+    assertEquals(Map.of("chat_template_kwargs", Map.of("enable_thinking", true)), models.version(old).getExtraBody());
     assertEquals(true, models.test(old, "admin").get("success"));
-    assertFalse(lastChatRequest.get().path("chat_template_kwargs").path("enable_thinking").asBoolean(true));
-    models.bind(Map.of("extract", old, "summary", old), "admin");
+    assertTrue(lastChatRequest.get().path("chat_template_kwargs").path("enable_thinking").asBoolean(false));
+    request.setExtraBody(extensions);
+    models.save(profile, request, "admin");
+    models.bind(kb, Map.of("extract", old, "summary", old), "admin");
     ingest();
     UUID generation = id(indexes.create(kb, "admin"));
     assertTrue(indexer.runOnce());
@@ -1011,7 +937,7 @@ class ModelIndexIntegrationTest {
         RuntimeException.class,
         () ->
             jdbc.update(
-                "UPDATE rag_model_version SET model='tampered' WHERE id=(SELECT embedding_version"
+                "UPDATE rag_index_model_snapshot SET model='tampered' WHERE id=(SELECT embedding_version"
                     + " FROM rag_index_generation WHERE id=?)",
                 gen));
   }
@@ -1178,7 +1104,7 @@ class ModelIndexIntegrationTest {
             .asText();
     var result =
         client.send(
-            java.net.http.HttpRequest.newBuilder(URI.create(root + "/api/admin/models/bindings"))
+            java.net.http.HttpRequest.newBuilder(URI.create(root + "/api/knowledge-bases/" + kb + "/model-bindings"))
                 .header("X-CSRF-TOKEN", csrf)
                 .header("Content-Type", "application/json")
                 .PUT(java.net.http.HttpRequest.BodyPublishers.ofString("{}"))
@@ -1195,5 +1121,60 @@ class ModelIndexIntegrationTest {
     assertEquals(200, models.statusCode());
     assertFalse(models.body().contains("test-private-key"));
     assertFalse(models.body().contains("secret_cipher"));
+  }
+  @Test
+  void editingUpdatesOneConfigurationWithoutSavingHistory() {
+    var created = config("CHAT", "original", 0);
+    UUID model = id(created);
+    var edited = models.save(model, request("CHAT", "edited", 0), "admin");
+    assertEquals(model, id(edited));
+    assertFalse(edited.containsKey("version"));
+    assertEquals("edited", models.version(model).getModel());
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_model_configuration WHERE id=?", Integer.class, model));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_model_snapshot WHERE profile_id=?", Integer.class, model));
+  }
+
+  @Test
+  void bindingsAreKnowledgeBaseScopedAndOwnerControlled() {
+    UUID other = bases.create("admin", "other model scope", "").getId();
+    assertTrue(models.bindings(other, "admin").isEmpty());
+    UUID a = id(config("CHAT", "scope-a", 0)), b = id(config("CHAT", "scope-b", 0));
+    models.bind(kb, Map.of("answer", a), "admin");
+    models.bind(other, Map.of("answer", b), "admin");
+    assertEquals(a, models.snapshot(kb).get("answer"));
+    assertEquals(b, models.snapshot(other).get("answer"));
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'binding-reader',password_hash FROM app_user"
+        + " WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "binding-reader", KnowledgeRole.READER);
+    var options = models.options(kb, "binding-reader");
+    assertFalse(options.isEmpty());
+    assertTrue(options.stream().allMatch(option -> option.keySet().equals(Set.of("id", "name", "kind"))));
+    assertEquals(403, assertThrows(RagAccessException.class,
+        () -> models.bind(kb, Map.of("answer", b), "binding-reader")).getStatus());
+    assertThrows(RagAccessException.class, () -> models.bindings(other, "binding-reader"));
+    assertEquals(a, models.snapshot(kb).get("answer"));
+    UUID owned = bases.create("binding-reader", "non-admin owner", "").getId();
+    models.bind(owned, Map.of("answer", b), "binding-reader");
+    assertEquals(b, models.bindings(owned, "binding-reader").get("answer"));
+    assertEquals(403, assertThrows(RagAccessException.class, () -> models.list("binding-reader")).getStatus());
+  }
+
+  @Test
+  void indexSnapshotsSurviveEditingAndDeletingUnboundConfiguration() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    UUID snapshot = jdbc.queryForObject("SELECT embedding_version FROM rag_index_generation WHERE id=?", UUID.class, generation);
+    var old = models.version(snapshot);
+    UUID model = old.getProfileId();
+    models.save(model, request("EMBEDDING", "embed4", 4), "admin");
+    assertEquals(3, models.version(snapshot).getDimensions());
+    assertEquals(4, models.version(model).getDimensions());
+    assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> models.delete(model, "admin"));
+    models.bind(kb, Collections.singletonMap("embedding", null), "admin");
+    models.delete(model, "admin");
+    assertThrows(RagAccessException.class, () -> models.version(model));
+    assertEquals(3, models.version(snapshot).getDimensions());
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_generation WHERE id=?", Integer.class, generation));
   }
 }

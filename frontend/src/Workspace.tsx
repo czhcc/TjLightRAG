@@ -70,7 +70,7 @@ export default function Workspace({ onSessionExpired, admin = false }: {
       </label>
       <nav aria-label={t("navigation.features")} className="space-y-2 border-t border-slate-100 pt-5">
         {features.map(([feature, label]) => <button key={feature} aria-current={page === feature ? "page" : undefined}
-          disabled={feature === "models" ? !admin : !selected} title={feature === "models" && !admin ? t("models.forbidden") : undefined}
+          disabled={feature === "models" ? !admin && selected?.role !== "OWNER" : !selected}
           className={`block w-full rounded-lg px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${page === feature ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"}`}
           onClick={() => setPage(feature)}>{t(label)}</button>)}
       </nav>
@@ -78,7 +78,7 @@ export default function Workspace({ onSessionExpired, admin = false }: {
     </aside>
     <section className="min-w-0 space-y-6">
       {error && <p role="alert" className="rounded-lg bg-red-50 p-4 text-red-700">{t(`workspace.${error}`)}</p>}
-      {page === "models" && admin ? <Models onSessionExpired={onSessionExpired} /> : !selected ?
+      {page === "models" && (admin || selected?.role === "OWNER") ? <Models key={`models-${selectedId}`} kb={selectedId || undefined} kbName={selected?.name} admin={admin} canBind={selected?.role === "OWNER"} onSessionExpired={onSessionExpired} /> : !selected ?
         <button className={primary} onClick={() => setRefresh(n => n + 1)}>{t("workspace.refresh")}</button> : <>
           <h2 className="text-2xl font-semibold">{selected.name}</h2>
           {selected.role === "READER" && <p className="text-sm text-slate-500">{t("workspace.readOnly")}</p>}

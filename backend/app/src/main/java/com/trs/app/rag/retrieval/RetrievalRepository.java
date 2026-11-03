@@ -52,8 +52,8 @@ public class RetrievalRepository {
     access.requireAccess(kb, actor, false);
     var rows =
         jdbc.query(
-            "SELECT g.* ,COALESCE((SELECT version_id FROM rag_model_binding WHERE"
-                + " role='keywords'),g.extract_version) keyword_version FROM rag_knowledge_base b"
+            "SELECT g.* ,COALESCE((SELECT model_id FROM rag_knowledge_base_model_binding WHERE"
+                + " knowledge_base_id=b.id AND role='keywords'),g.extract_version) keyword_version FROM rag_knowledge_base b"
                 + " JOIN rag_index_generation g ON g.knowledge_base_id=b.id AND"
                 + " g.id=b.active_generation_id WHERE b.id=? AND g.state='ready'",
             (rs, n) ->
