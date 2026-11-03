@@ -24,7 +24,11 @@ export async function readQueryEvents(
       if (data.length) {
         const payload: unknown = JSON.parse(data.join("\n"));
         onEvent(event, payload);
-        if (event === "error") throw new ApiError(502, "query_stream_failed");
+        if (event === "error") {
+          const code = (payload as { error?: unknown } | null)?.error;
+          throw new ApiError(502, typeof code === "string" && /^(query|retrieval|model)_[a-z_]+$/.test(code)
+            ? code : "query_stream_failed");
+        }
         if (event === "done") {
           const status = (payload as { status?: string })?.status;
           if (!["success", "empty", "preview"].includes(status ?? ""))

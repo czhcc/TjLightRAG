@@ -950,6 +950,46 @@ class RetrievalIntegrationTest {
   }
 
   @Test
+  void browserQueryWithoutBudgetSupportsLargeConfiguredOutputAndExplicitBudgetStillFails() throws Exception {
+    readyAnswer();
+    var configured = new ModelRequest();
+    configured.setName("large-output-answer");
+    configured.setKind("CHAT");
+    configured.setModel("answer-model");
+    configured.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1");
+    configured.setApiKey("retrieval-private-key");
+    configured.setContextTokens(26000);
+    configured.setMaxOutputTokens(20000);
+    configured.setTimeoutSeconds(5);
+    configured.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
+    UUID answer = UUID.fromString(models.save(null, configured, "admin").get("id").toString());
+    models.bind(Map.of("answer", answer), "admin");
+    var session = login();
+    Map<String, Object> body = new LinkedHashMap<>(Map.of("query", "LightRAG 是什么？", "mode", "naive",
+        "requestId", UUID.randomUUID()));
+    var response = session.client().send(post(session, "/query/stream", body), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, response.statusCode());
+    var errorCode = java.util.regex.Pattern.compile("\"error\":\"([a-z_]+)\"").matcher(response.body());
+    assertTrue(response.body().contains("event:done"), errorCode.find() ? errorCode.group(1) : "missing done");
+    assertFalse(response.body().contains("event:error"));
+    assertTrue(response.body().contains("\"reservedOutputTokens\":20000"));
+    assertEquals(1, answerCalls.get());
+    body.put("preview", "prompt");
+    var preview = session.client().send(post(session, "/query", body), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, preview.statusCode());
+    var budget = json.readTree(preview.body()).path("retrieval").path("metadata").path("answerBudget");
+    assertEquals(26000, budget.path("maxTotalTokens").asInt());
+    assertTrue(budget.path("totalTokens").asInt() <= 26000);
+    body.put("preview", "answer");
+    body.put("requestId", UUID.randomUUID());
+    body.put("maxTotalTokens", 16000);
+    var limited = session.client().send(post(session, "/query/stream", body), HttpResponse.BodyHandlers.ofString());
+    assertTrue(limited.body().contains("query_budget_too_small"));
+    assertFalse(limited.body().contains("event:done"));
+    assertEquals(1, answerCalls.get());
+  }
+
+  @Test
   void postSseUsesSessionCsrfAndMidStreamFailureIsNeverDone() throws Exception {
     readyAnswer();
     var session = login();

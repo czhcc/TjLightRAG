@@ -17,7 +17,7 @@ export async function request<T>(
       const body = await response.json();
       if (
         typeof body.error === "string" &&
-        /^retrieval_[a-z_]+$/.test(body.error)
+        /^(retrieval|query)_[a-z_]+$/.test(body.error)
       )
         code = body.error;
     } catch {

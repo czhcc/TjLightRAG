@@ -75,6 +75,59 @@ class QueryServiceTest {
   }
 
   @Test
+  void omittedBudgetUsesConfiguredContextAndKeepsLargeOutputLimit() {
+    var configured = new ModelVersion(modelId, UUID.randomUUID(), "CHAT", "https://example.com/v1",
+        "answer", "", 0, 26000, 20000, 10);
+    when(models.version(modelId)).thenReturn(configured);
+    when(retrieval.query(eq(kb), eq("admin"), any(), any())).thenAnswer(i -> {
+      QueryRequest planned = i.getArgument(2);
+      assertEquals(7008, planned.getMaxTotalTokens());
+      return evidence("success");
+    });
+    when(gateway.chat(any(), any())).thenReturn("事实[1]");
+    var out = service.query(kb, "admin", request);
+    assertEquals("success", out.getStatus());
+    assertEquals(26000, ((Map<?, ?>) out.getRetrieval().getMetadata().get("answerBudget")).get("maxTotalTokens"));
+    verify(gateway).chat(argThat(v -> v.getMaxOutputTokens() == 20000), any());
+    assertEquals(16000, request.getMaxTotalTokens());
+    assertEquals("success", service.query(kb, "admin", request).getStatus());
+  }
+
+  @Test
+  void explicitBudgetStillLimitsAnswerAndFailsBeforeAnyModelCall() {
+    when(models.version(modelId)).thenReturn(new ModelVersion(modelId, UUID.randomUUID(), "CHAT",
+        "https://example.com/v1", "answer", "", 0, 26000, 20000, 10));
+    request.setMaxTotalTokens(16000);
+    var failure = assertThrows(RetrievalFailure.class, () -> service.query(kb, "admin", request));
+    assertEquals("query_budget_too_small", failure.getCode());
+    verifyNoInteractions(retrieval, gateway);
+  }
+
+  @Test
+  void actualPromptMustFitConfiguredContextEvenWhenRetrievalIgnoresBudget() {
+    when(models.version(modelId)).thenReturn(new ModelVersion(modelId, UUID.randomUUID(), "CHAT",
+        "https://example.com/v1", "answer", "", 0, 26000, 20000, 10));
+    returns(evidence("success"));
+    when(tokenizer.encode(anyString())).thenReturn(new int[4000]);
+    var failure = assertThrows(RetrievalFailure.class, () -> service.query(kb, "admin", request));
+    assertEquals("query_budget_too_small", failure.getCode());
+    verifyNoInteractions(gateway);
+  }
+
+  @Test
+  void jsonBudgetOmissionAndExplicitValueRemainDistinct() {
+    var json = tools.jackson.databind.json.JsonMapper.builder().build();
+    var automatic = json.readValue("{\"query\":\"question\"}", QueryRequest.class);
+    var explicit = json.readValue("{\"query\":\"question\",\"maxTotalTokens\":16000}", QueryRequest.class);
+    when(models.version(modelId)).thenReturn(new ModelVersion(modelId, UUID.randomUUID(), "CHAT",
+        "https://example.com/v1", "answer", "", 0, 26000, 20000, 10));
+    returns(evidence("empty"));
+    assertEquals("empty", service.query(kb, "admin", automatic).getStatus());
+    assertEquals("query_budget_too_small", assertThrows(RetrievalFailure.class,
+        () -> service.query(kb, "admin", explicit)).getCode());
+  }
+
+  @Test
   void previewUsesExactlyTheAnswerPromptAndNeverCallsAnswerModel() {
     returns(evidence("success"));
     request.setPreview("prompt");

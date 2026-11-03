@@ -118,6 +118,21 @@ it("keeps partial output but shows an interrupted-stream error without success",
   expect(screen.getByText("部分内容")).toBeTruthy();
   expect(screen.queryByText("回答已完成")).toBeNull();
 });
+it.each(["answer", "context"])("shows a specific token budget error for %s", async (kind) => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/csrf")
+    ? { ok: true, status: 200, json: async () => ({ token: "t" }) }
+    : kind === "context"
+      ? { ok: false, status: 400, json: async () => ({ error: "query_budget_too_small" }) }
+      : { ok: true, status: 200, headers: new Headers({ "Content-Type": "text/event-stream" }),
+          body: stream([["error", { error: "query_budget_too_small" }]]) }));
+  render(<QueryPanel kb="kb" onSessionExpired={() => {}} />);
+  fireEvent.change(screen.getByLabelText("问答问题"), { target: { value: "问题" } });
+  if (kind === "context") {
+    fireEvent.click(screen.getByRole("button", { name: "预览上下文" }));
+  } else fireEvent.click(screen.getByRole("button", { name: "生成回答" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("问答 token 预算不足");
+  expect(screen.queryByText("回答已完成")).toBeNull();
+});
 it("explicitly cancels and aborts the fetch, and clears drafts on knowledge-base switch", async () => {
   let signal: AbortSignal | undefined;
   const fetch = vi.fn(async (url: string, options?: RequestInit) => {

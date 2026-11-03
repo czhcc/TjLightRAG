@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { readQueryEvents } from "./queryStream";
+import { ApiError } from "./api";
 function body(parts: Uint8Array[]) {
   return new ReadableStream<Uint8Array>({
     start(c) {
@@ -50,4 +51,12 @@ it("rejects oversized events and malformed JSON", async () => {
     await expect(
       readQueryEvents(body([new TextEncoder().encode(raw)]), () => {}),
     ).rejects.toThrow();
+});
+it("preserves safe provider error codes for visible query failures", async () => {
+  await expect(readQueryEvents(body([new TextEncoder().encode(
+    'event: error\ndata: {"error":"query_budget_too_small"}\n\n',
+  )]), () => {})).rejects.toMatchObject({ status: 502, code: "query_budget_too_small" });
+  await expect(readQueryEvents(body([new TextEncoder().encode(
+    'event: error\ndata: {"error":"private response body"}\n\n',
+  )]), () => {})).rejects.toEqual(new ApiError(502, "query_stream_failed"));
 });

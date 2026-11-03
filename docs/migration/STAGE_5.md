@@ -44,7 +44,7 @@ SSE 每帧为 `event: name` 和 JSON `data`，空行结束：
 
 ## 预算、资源与权限
 
-- 保留阶段 4 完整记录预算；额外扣除回答模型实际配置输出超过 1024 的差额和 16 token 消息开销差额，使真实 `system + user + 32 消息开销 + maxOutputTokens` 同时不超过请求总额与模型上下文上限。`retrieval.metadata.answerBudget` 返回这一实际保护统计，阶段 4 的 `budget` 继续描述上下文计划。都是 cl100k_base 估计和配置预留，不冒充供应商账单用量。
+- 保留阶段 4 完整记录预算；问答省略 `maxTotalTokens` 时使用回答模型上下文作为总额，不使用继承的检索默认 16000。显式提供时仍取请求总额和模型上下文的较小值。额外扣除回答模型配置输出超过 1024 的差额和 16 token 消息开销差额，内部检索计划最多 64000；最终检查 `system + user + 32 消息开销 + maxOutputTokens` 不超过有效总额。`retrieval.metadata.answerBudget.maxTotalTokens` 返回有效总额，阶段 4 的 `budget` 描述上下文计划。都是 cl100k_base 估计和配置预留，不冒充供应商账单用量。预算错误码沿 SSE 与预览 HTTP 响应传递，界面显示明确提示，失败流不发送 done。
 - 预览与生成采取相同模型上限及重排设置；禁止将预览可见但实际不会发送的超预算块作为依据。
 - 输出引用 `[数字]` 对照实际 references，返回 `citedReferenceIds` 与 `unknownReferenceIds`；未知编号不解析为原文，界面提醒。未改写供应商回答，也不声称编号匹配等同于事实已被证据支持。首版答案为纯文本，原文按码点高亮，不执行模型 HTML/Markdown。
 - 每次模型调用不占长数据库事务。生成前、每段增量和完成前复核知识库权限及原捕获索引代状态；心跳也复核权限。

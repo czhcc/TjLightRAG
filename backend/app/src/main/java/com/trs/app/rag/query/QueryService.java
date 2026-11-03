@@ -88,9 +88,12 @@ public class QueryService {
       // additional configured output plus the gateway's conservative 32-message accounting.
       int reserve = Math.max(0, answer.getMaxOutputTokens() - ContextPlanner.OUTPUT_RESERVE) + 16;
       int original = request.getMaxTotalTokens();
-      int effective = Math.min(original, answer.getContextTokens()) - reserve;
+      int totalBudget = request.hasExplicitTotalBudget()
+          ? Math.min(original, answer.getContextTokens()) : answer.getContextTokens();
+      // The retrieval API caps its planning budget at 64000, independently of model output.
+      int effective = Math.min(64000, totalBudget - reserve);
       if (effective < 1024) throw new RetrievalFailure("query_budget_too_small", 400);
-      request.setMaxTotalTokens(effective);
+      request.usePlanningBudget(effective);
       String[] rerankState = {
         request.isEnableRerank()
             ? (reranker == null ? "not_configured" : "no_candidates")
@@ -120,7 +123,7 @@ public class QueryService {
                   return selected.subList(0, Math.min(selected.size(), request.getChunkTopK()));
                 });
       } finally {
-        request.setMaxTotalTokens(original);
+        request.usePlanningBudget(original);
       }
       result =
           new Result(
@@ -146,7 +149,7 @@ public class QueryService {
           messages.stream().mapToInt(m -> tokenizer.encode(m.get("content")).length + 8).sum()
               + 16
               + answer.getMaxOutputTokens();
-      if (actual > Math.min(original, answer.getContextTokens()))
+      if (actual > totalBudget)
         throw new RetrievalFailure("query_budget_too_small", 400);
       Map<String, Object> diagnostic = new LinkedHashMap<>(result.getMetadata());
       diagnostic.put(
@@ -155,7 +158,7 @@ public class QueryService {
               "totalTokens",
               actual,
               "maxTotalTokens",
-              original,
+              totalBudget,
               "modelContextTokens",
               answer.getContextTokens(),
               "reservedOutputTokens",
