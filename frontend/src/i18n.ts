@@ -19,6 +19,17 @@ const resources = {
         documents: "文档管理",
         jobs: "任务管理",
       },
+      graph: {
+        title: "图谱查看", hint: "按实体类型、名称查询；双击节点或选中后按 Enter 展开关联节点。可拖动节点、拖动画布及滚轮缩放。",
+        type: "实体类型", name: "实体名称", allTypes: "全部类型", nameHint: "输入名称，支持部分匹配", search: "查询",
+        canvas: "关联图", expand: "展开 {{name}}（{{type}}）", relation: "关联", resetView: "重置视图", zoomIn: "放大", zoomOut: "缩小",
+        details: "实体详情", expandSelected: "展开关联节点", counts: "当前显示 {{nodes}} 个实体、{{links}} 条关系",
+        start: "请选择类型或输入名称后查询，也可直接查询当前图谱。", empty: "没有找到匹配的实体，请调整类型或名称。",
+        noIndex: "当前知识库还没有可用索引，请先上传文档并完成索引构建。", unavailable: "实体或索引已不可用，或没有访问权限，请重新查询。",
+        failure: "图谱加载失败，请检查连接后重试。", limit: "当前图谱已达到 500 个节点或 1000 条关系的显示上限，请缩小查询范围后重试。",
+        searchLimited: "查询结果较多，当前最多显示 100 个实体及 200 条关系，请细化类型或名称。",
+        moreNeighbors: "该节点还有更多关联，再次双击可继续展开。", noNeighbors: "该节点没有关联节点。", expanded: "该节点的关联节点已全部展开。",
+      },
       models: {
         title: "模型配置",
         description:
@@ -333,6 +344,17 @@ const resources = {
         features: "Features",
         documents: "Document management",
         jobs: "Task management",
+      },
+      graph: {
+        title: "Graph viewer", hint: "Search by entity type or name. Double-click a node or focus it and press Enter to expand neighbors. Drag nodes or the canvas; scroll to zoom.",
+        type: "Entity type", name: "Entity name", allTypes: "All types", nameHint: "Enter all or part of a name", search: "Search",
+        canvas: "Relationship graph", expand: "Expand {{name}} ({{type}})", relation: "Related", resetView: "Reset view", zoomIn: "Zoom in", zoomOut: "Zoom out",
+        details: "Entity details", expandSelected: "Expand neighbors", counts: "Showing {{nodes}} entities and {{links}} relations",
+        start: "Choose a type or enter a name, or search to browse the current graph.", empty: "No matching entities. Try a different type or name.",
+        noIndex: "This knowledge base has no available index. Upload documents and finish indexing first.", unavailable: "The entity or index is unavailable, or access was denied. Search again.",
+        failure: "Unable to load the graph. Check your connection and retry.", limit: "The graph reached its display limit of 500 nodes or 1000 relations. Narrow your search and retry.",
+        searchLimited: "Showing at most 100 matching entities and 200 relations. Refine the type or name to narrow your results.",
+        moreNeighbors: "More neighbors are available. Double-click this node again to continue.", noNeighbors: "This node has no neighbors.", expanded: "All neighbors of this node have been expanded.",
       },
       models: {
         title: "Model settings",
