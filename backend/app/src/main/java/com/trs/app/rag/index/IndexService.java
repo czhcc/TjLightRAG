@@ -33,7 +33,7 @@ public class IndexService {
   public Map<String, Object> createAutomatic(UUID kb, String actor, Map<UUID, UUID> revisions) {
     access.requireAccess(kb, actor, true);
     jdbc.queryForList("SELECT id FROM rag_knowledge_base WHERE id=? FOR UPDATE", kb);
-    Map<String, UUID> bindings = models.snapshot();
+    Map<String, UUID> bindings = models.captureIndexBindings(kb);
     if (!bindings.keySet().containsAll(Set.of("extract", "embedding")))
       throw new ModelFailure("model_bindings_missing");
     UUID extract = bindings.get("extract"), summary = bindings.getOrDefault("summary", extract),
@@ -140,7 +140,7 @@ public class IndexService {
   public Map<String, Object> create(UUID kb, String actor) {
     owner(kb, actor);
     jdbc.queryForList("SELECT id FROM rag_knowledge_base WHERE id=? FOR UPDATE", kb);
-    Map<String, UUID> bindings = models.snapshot();
+    Map<String, UUID> bindings = models.captureIndexBindings(kb);
     if (!bindings.keySet().containsAll(Set.of("extract", "embedding")))
       throw new ModelFailure("model_bindings_missing");
     UUID extract = bindings.get("extract"),

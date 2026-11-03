@@ -76,7 +76,7 @@ public class QueryService {
           || !Double.isFinite(request.getMinRerankScore())
           || request.getMinRerankScore() < 0
           || request.getMinRerankScore() > 1) throw new IllegalArgumentException();
-      Map<String, UUID> bindings = models.snapshot();
+      Map<String, UUID> bindings = models.snapshot(kb);
       UUID answerId = bindings.get("answer"),
           rerankId = request.isEnableRerank() ? bindings.get("rerank") : null;
       if (answerId == null) throw new RetrievalFailure("query_answer_model_missing", 409);

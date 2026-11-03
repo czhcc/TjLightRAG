@@ -24,49 +24,30 @@ public class ModelController {
     return service.status(user.getName());
   }
 
-  /** Creates the first immutable configuration version. @author agent */
+  /** Creates a current model configuration. @author czhcc */
   @PostMapping
   public Map<String, Object> create(@RequestBody ModelRequest body, Principal user) {
     return service.save(null, body, user.getName());
   }
 
-  /** Appends a version without modifying historical credentials or indexes. @author agent */
+  /** Updates the configuration while preserving captured index inputs. @author czhcc */
   @PutMapping("/{profile}")
   public Map<String, Object> update(
       @PathVariable UUID profile, @RequestBody ModelRequest body, Principal user) {
     return service.save(profile, body, user.getName());
   }
 
-  /** Lists masked configuration history. @author agent */
-  @GetMapping("/{profile}/versions")
-  public List<Map<String, Object>> history(@PathVariable UUID profile, Principal user) {
-    return service.history(profile, user.getName());
+  /** Probes the current model configuration. @author czhcc */
+  @PostMapping("/{model}/test")
+  public Map<String, Object> test(@PathVariable UUID model, Principal user) {
+    return service.test(model, user.getName());
   }
 
-  /** Probes the captured protocol configuration. @author agent */
-  @PostMapping("/versions/{version}/test")
-  public Map<String, Object> test(@PathVariable UUID version, Principal user) {
-    return service.test(version, user.getName());
-  }
-
-  /** Deletes an unreferenced historical configuration version. @author czhcc */
-  @DeleteMapping("/versions/{version}")
+  /** Deletes a model after all knowledge-base bindings have been removed. @author czhcc */
+  @DeleteMapping("/{model}")
   @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
-  public void delete(@PathVariable UUID version, Principal user) {
-    service.delete(version, user.getName());
+  public void delete(@PathVariable UUID model, Principal user) {
+    service.delete(model, user.getName());
   }
 
-  /** Reads purpose bindings. @author agent */
-  @GetMapping("/bindings")
-  public Map<String, UUID> bindings(Principal user) {
-    return service.bindings(user.getName());
-  }
-
-  /** Saves purpose bindings; null values unbind optional purposes. @author agent */
-  @PutMapping("/bindings")
-  @org.springframework.web.bind.annotation.ResponseStatus(
-      org.springframework.http.HttpStatus.NO_CONTENT)
-  public void bind(@RequestBody Map<String, UUID> body, Principal user) {
-    service.bind(body, user.getName());
-  }
 }

@@ -30,7 +30,7 @@ class QueryServiceTest {
   void setup() {
     when(tokenizer.encode(anyString())).thenReturn(new int[] {1});
     when(tokenizer.getName()).thenReturn("cl100k_base");
-    when(models.snapshot()).thenReturn(Map.of("answer", modelId));
+    when(models.snapshot(kb)).thenReturn(Map.of("answer", modelId));
     when(models.version(modelId))
         .thenReturn(
             new ModelVersion(
@@ -164,7 +164,7 @@ class QueryServiceTest {
 
   @Test
   void missingAnswerBindingFailsExplicitlyAndDoesNotCallModels() {
-    when(models.snapshot()).thenReturn(Map.of());
+    when(models.snapshot(kb)).thenReturn(Map.of());
     var e = assertThrows(RetrievalFailure.class, () -> service.query(kb, "admin", request));
     assertEquals("query_answer_model_missing", e.getCode());
     verifyNoInteractions(gateway);
@@ -199,7 +199,7 @@ class QueryServiceTest {
 
   @Test
   void rerankFailureIsVisibleRatherThanSilentlyFallingBack() {
-    when(models.snapshot()).thenReturn(Map.of("answer", modelId, "rerank", modelId));
+    when(models.snapshot(kb)).thenReturn(Map.of("answer", modelId, "rerank", modelId));
     request.setEnableRerank(true);
     when(retrieval.query(eq(kb), eq("admin"), any(), any()))
         .thenAnswer(

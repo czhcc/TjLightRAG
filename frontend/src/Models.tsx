@@ -1,276 +1,144 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, request, mutate } from "./api";
-type Model = {
-  id: string;
-  profileId: string;
-  name: string;
-  kind: string;
-  version: number;
-  baseUrl: string;
-  model: string;
-  keyConfigured: boolean;
-  dimensions: number;
-  contextTokens: number;
-  maxOutputTokens: number;
-  timeoutSeconds: number;
-  extraBody?: Record<string, unknown>;
-};
-const defaults = {
-  name: "",
-  kind: "CHAT",
-  baseUrl: "",
-  model: "",
-  apiKey: "",
-  clearApiKey: false,
-  dimensions: 0,
-  contextTokens: 16000,
-  maxOutputTokens: 2000,
-  timeoutSeconds: 30,
-  extraBody: "",
-};
-const roles = [
-  "extract",
-  "summary",
-  "keywords",
-  "answer",
-  "embedding",
-  "rerank",
-];
-const kinds = ["CHAT", "EMBEDDING", "RERANK"] as const;
-type Probe = { state: "pending" | "success" | "failure"; ms?: number };
-export default function Models({
-  onSessionExpired,
-}: {
-  onSessionExpired: () => void;
-}) {
+type Model = { id: string; name: string; kind: string; baseUrl: string; model: string; keyConfigured: boolean;
+  dimensions: number; contextTokens: number; maxOutputTokens: number; timeoutSeconds: number; extraBody?: Record<string, unknown> };
+const defaults = { name: "", kind: "CHAT", baseUrl: "", model: "", apiKey: "", clearApiKey: false,
+  dimensions: 0, contextTokens: 16000, maxOutputTokens: 2000, timeoutSeconds: 30, extraBody: "" };
+const roles = ["extract", "summary", "keywords", "answer", "embedding", "rerank"];
+const kinds = ["CHAT", "EMBEDDING", "RERANK"];
+const button = "rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-40";
+function Dialog({ title, busy, close, children }: { title: string; busy: boolean; close: () => void; children: ReactNode }) {
   const { t } = useTranslation();
-  const [probes, setProbes] = useState<Record<string, Probe>>({});
-  const [pendingDelete, setPendingDelete] = useState("");
-  const [deleteError, setDeleteError] = useState("");
-  const [deleting, setDeleting] = useState(false);
-  const probeRequest = useRef<AbortController | null>(null);
-  const [models, setModels] = useState<Model[]>([]),
-    [bindings, setBindings] = useState<Record<string, string>>({}),
-    [form, setForm] = useState({ ...defaults }),
-    [profile, setProfile] = useState(""),
-    [busy, setBusy] = useState(false),
-    [denied, setDenied] = useState(false),
-    [error, setError] = useState(""),
-    [notice, setNotice] = useState(""),
-    [master, setMaster] = useState<boolean | undefined>();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("input,select,button")?.focus();
+    return () => previous?.focus();
+  }, []);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+    <div ref={ref} role="dialog" aria-modal="true" aria-label={title} className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
+      onKeyDown={e => {
+        if (e.key === "Escape" && !busy) { e.stopPropagation(); close(); }
+        if (e.key === "Tab") {
+          const items = Array.from(ref.current?.querySelectorAll<HTMLElement>('input:not(:disabled),select:not(:disabled),textarea:not(:disabled),button:not(:disabled)') ?? []);
+          const next = e.shiftKey ? items.at(-1) : items[0];
+          if ((e.shiftKey && document.activeElement === items[0]) || (!e.shiftKey && document.activeElement === items.at(-1))) { e.preventDefault(); next?.focus(); }
+        }
+      }}>
+      <div className="mb-5 flex items-center justify-between gap-4"><h2 className="text-xl font-semibold">{title}</h2>
+        <button type="button" disabled={busy} onClick={close} className={button}>{t("documents.close")}</button></div>
+      {children}
+    </div></div>;
+}
+/** Current model catalog and knowledge-base settings, with transient modal drafts. */
+export default function Models({ kb, kbName, admin = true, canBind = false, onSessionExpired }:
+  { kb?: string; kbName?: string; admin?: boolean; canBind?: boolean; onSessionExpired: () => void }) {
+  const { t } = useTranslation();
+  const [models, setModels] = useState<Model[]>([]), [bindings, setBindings] = useState<Record<string, string>>({});
+  const [bindingDraft, setBindingDraft] = useState<Record<string, string>>({});
+  const [kind, setKind] = useState("CHAT"), [form, setForm] = useState({ ...defaults }), [profile, setProfile] = useState("");
+  const [modal, setModal] = useState<"edit" | "bindings" | "delete" | null>(null), [selected, setSelected] = useState<Model | null>(null);
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const [master, setMaster] = useState<boolean>(), [probes, setProbes] = useState<Record<string, string>>({});
+  const active = useRef<AbortController | null>(null);
   function fail(e: unknown) {
     if (e instanceof ApiError && e.status === 401) onSessionExpired();
-    if (e instanceof ApiError && e.status === 403) setDenied(true);
-    setError(
-      t(
-        e instanceof ApiError && e.status === 403
-          ? "models.forbidden"
-          : "models.failure",
-      ),
-    );
+    setError(t(e instanceof ApiError && e.status === 409 ? "models.deleteConflict" : e instanceof ApiError && e.status === 403 ? "models.forbidden" : "models.failure"));
   }
-  let extraBody: Record<string, unknown> = {};
-  let extraBodyValid = true;
+  async function load(signal: AbortSignal) {
+    const [items, bound, status] = await Promise.all([
+      request<Model[]>(admin ? "/api/admin/models" : `/api/knowledge-bases/${kb}/model-options`, { signal }),
+      kb ? request<Record<string, string>>(`/api/knowledge-bases/${kb}/model-bindings`, { signal }) : Promise.resolve({}),
+      admin ? request<{ masterKeyConfigured: boolean }>("/api/admin/models/status", { signal }) : Promise.resolve({ masterKeyConfigured: true }),
+    ]);
+    if (!signal.aborted) { setModels(items); setBindings(bound); setMaster(status.masterKeyConfigured); }
+  }
+  useEffect(() => {
+    const controller = new AbortController(); active.current = controller;
+    setModal(null); setError(""); setModels([]); setBindings({}); setBusy(false); setNotice(""); setForm({ ...defaults });
+    void load(controller.signal).catch(e => { if (!controller.signal.aborted) fail(e); });
+    return () => controller.abort();
+  }, [kb, admin]);
+  function close() { setModal(null); setForm({ ...defaults, kind }); setProfile(""); setSelected(null); setError(""); }
+  function edit(model?: Model) {
+    setError(""); setNotice(""); setProfile(model?.id ?? "");
+    setForm(model ? { name: model.name, kind: model.kind, baseUrl: model.baseUrl, model: model.model, apiKey: "", clearApiKey: false,
+      dimensions: model.dimensions, contextTokens: model.contextTokens, maxOutputTokens: model.maxOutputTokens,
+      timeoutSeconds: model.timeoutSeconds, extraBody: JSON.stringify(model.extraBody ?? {}, null, 2) }
+      : { ...defaults, kind, dimensions: kind === "EMBEDDING" ? 1024 : 0 });
+    setModal("edit");
+  }
+  let extraBody: Record<string, unknown> = {}, extraBodyValid = true;
   if (form.kind === "CHAT" && form.extraBody.trim()) {
-    try {
-      const value: unknown = JSON.parse(form.extraBody);
+    try { const value: unknown = JSON.parse(form.extraBody);
       if (!value || typeof value !== "object" || Array.isArray(value) || new Blob([form.extraBody]).size > 16384) extraBodyValid = false;
       else extraBody = value as Record<string, unknown>;
     } catch { extraBodyValid = false; }
   }
-  async function load() {
-    try {
-      const [items, bound, status] = await Promise.all([
-        request<Model[]>("/api/admin/models"),
-        request<Record<string, string>>("/api/admin/models/bindings"),
-        request<{ masterKeyConfigured: boolean }>("/api/admin/models/status"),
-      ]);
-      setModels(items);
-      setBindings(bound);
-      setMaster(status.masterKeyConfigured);
-    } catch (e) {
-      fail(e);
-    }
+  async function execute(work: (signal: AbortSignal) => Promise<void>) {
+    const signal = active.current?.signal; if (!signal || busy) return;
+    setBusy(true); setError(""); setNotice("");
+    try { await work(signal); } catch (e) { if (!signal.aborted) fail(e); }
+    finally { if (!signal.aborted) setBusy(false); }
   }
-  useEffect(() => {
-    const controller = new AbortController();
-    Promise.all([
-      request<Model[]>("/api/admin/models", { signal: controller.signal }),
-      request<Record<string, string>>("/api/admin/models/bindings", {
-        signal: controller.signal,
-      }),
-      request<{ masterKeyConfigured: boolean }>("/api/admin/models/status", {
-        signal: controller.signal,
-      }),
-    ])
-      .then(([items, bound, status]) => {
-        if (!controller.signal.aborted) {
-          setModels(items);
-          setBindings(bound);
-          setMaster(status.masterKeyConfigured);
-        }
-      })
-      .catch((e) => {
-        if (!controller.signal.aborted) fail(e);
-      });
-    return () => {
-      controller.abort();
-      probeRequest.current?.abort();
-    };
-  }, []);
-  async function save(e: FormEvent) {
-    e.preventDefault();
-    if (!extraBodyValid) return;
-    setBusy(true);
-    setError("");
-    setNotice("");
-    const body = { ...form, extraBody };
-    setForm((f) => ({ ...f, apiKey: "" }));
-    try {
-      await mutate(
-        "/api/admin/models" + (profile ? "/" + profile : ""),
-        body,
-        profile ? "PUT" : "POST",
-      );
-      setForm({ ...defaults, kind: body.kind, dimensions: body.kind === "EMBEDDING" ? 1024 : 0 });
-      setProfile("");
-      setNotice(t("models.saved"));
-      await load();
-    } catch (e) {
-      fail(e);
-    } finally {
-      setBusy(false);
-    }
+  async function save(event: FormEvent) {
+    event.preventDefault(); if (!extraBodyValid) return;
+    await execute(async signal => {
+      await mutate(`/api/admin/models${profile ? "/" + profile : ""}`, { ...form, extraBody: form.kind === "CHAT" ? extraBody : {} }, profile ? "PUT" : "POST", signal);
+      if (!signal.aborted) { close(); setNotice(t("models.saved")); await load(signal); }
+    });
   }
   async function bind() {
-    setBusy(true);
-    setError("");
-    try {
-      await mutate(
-        "/api/admin/models/bindings",
-        Object.fromEntries(roles.map((r) => [r, bindings[r] || null])),
-        "PUT",
-      );
-      setNotice(t("models.bindingSaved"));
-    } catch (e) {
-      fail(e);
-    } finally {
-      setBusy(false);
-    }
+    if (!kb) return;
+    await execute(async signal => {
+      await mutate(`/api/knowledge-bases/${kb}/model-bindings`, Object.fromEntries(roles.map(role => [role, bindingDraft[role] || null])), "PUT", signal);
+      if (!signal.aborted) { setBindings(bindingDraft); close(); setNotice(t("models.bindingSaved")); }
+    });
+  }
+  async function remove() {
+    if (!selected) return;
+    await execute(async signal => {
+      await mutate(`/api/admin/models/${selected.id}`, undefined, "DELETE", signal);
+      if (!signal.aborted) { close(); setNotice(t("models.deleted")); await load(signal); }
+    });
   }
   async function probe(id: string) {
-    if (busy) return;
-    const controller = new AbortController();
-    probeRequest.current = controller;
-    setBusy(true);
-    setError("");
-    setNotice("");
-    setProbes(current => ({ ...current, [id]: { state: "pending" } }));
-    try {
-      const result = await mutate<{ elapsedMs: number }>(
-        "/api/admin/models/versions/" + id + "/test",
-        undefined,
-        "POST",
-        controller.signal,
-      );
-      if (!controller.signal.aborted)
-        setProbes(current => ({ ...current, [id]: { state: "success", ms: result.elapsedMs } }));
-    } catch (e) {
-      if (!controller.signal.aborted) {
-        if (e instanceof ApiError && [401, 403].includes(e.status)) fail(e);
-        setProbes(current => ({ ...current, [id]: { state: "failure" } }));
-      }
-    } finally {
-      if (!controller.signal.aborted) setBusy(false);
-    }
-  }
-  function edit(m: Model) {
-    setProfile(m.profileId);
-    setForm({
-      name: m.name,
-      kind: m.kind,
-      baseUrl: m.baseUrl,
-      model: m.model,
-      apiKey: "",
-      clearApiKey: false,
-      dimensions: m.dimensions,
-      contextTokens: m.contextTokens,
-      maxOutputTokens: m.maxOutputTokens,
-      timeoutSeconds: m.timeoutSeconds,
-      extraBody: JSON.stringify(m.extraBody ?? {}, null, 2),
+    await execute(async signal => {
+      setProbes(old => ({ ...old, [id]: t("models.testing") }));
+      try {
+        const out = await mutate<{ elapsedMs: number }>(`/api/admin/models/${id}/test`, undefined, "POST", signal);
+        if (!signal.aborted) setProbes(old => ({ ...old, [id]: t("models.testOk", { ms: out.elapsedMs }) }));
+      } catch (e) { if (!signal.aborted) setProbes(old => ({ ...old, [id]: t("models.testFailed") })); throw e; }
     });
-    setNotice("");
   }
-  async function remove(id: string) {
-    if (busy) return;
-    setBusy(true);
-    setDeleting(true);
-    setDeleteError("");
-    setError("");
-    setNotice("");
-    try {
-      await mutate("/api/admin/models/versions/" + id, undefined, "DELETE");
-      setModels(current => current.filter(model => model.id !== id));
-      setPendingDelete("");
-      setNotice(t("models.deleted"));
-      await load();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) setDeleteError(t("models.deleteConflict"));
-      else if (e instanceof ApiError && e.status === 404) {
-        setPendingDelete("");
-        await load();
-        setError(t("models.deleteMissing"));
-      } else {
-        if (e instanceof ApiError && e.status === 401) onSessionExpired();
-        setDeleteError(t(e instanceof ApiError && e.status === 403 ? "models.forbidden" : "models.failure"));
-      }
-    } finally {
-      setDeleting(false);
-      setBusy(false);
-    }
-  }
-  function category(kind: string) {
-    setPendingDelete("");
-    setProfile("");
-    setForm({ ...defaults, kind, dimensions: kind === "EMBEDDING" ? 1024 : 0 });
-    setError("");
-    setNotice("");
-  }
-  return (
-    <section className="space-y-6">
-      <h1 className="text-2xl font-semibold">{t("models.title")}</h1>
-      <p className="text-sm text-slate-600">{t("models.description")}</p>
-      {error && (
-        <p role="alert" className="text-red-700">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="text-blue-700">
-          {notice}
-        </p>
-      )}
-      {!denied && (
-        <>
-          <div role="group" aria-label={t("models.categories")} className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {kinds.map(kind => (
-              <button key={kind} type="button" disabled={busy}
-                aria-pressed={form.kind === kind} onClick={() => { if (form.kind !== kind) category(kind); }}
-                className={`rounded-xl border px-4 py-3 text-left font-medium disabled:opacity-40 ${form.kind === kind ? "border-blue-600 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
-                {t(`models.kinds.${kind}`)}
-              </button>
-            ))}
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold">{t(`models.kinds.${form.kind}`)}</h2>
-            <p className="mt-2 text-sm text-slate-500">{t(`models.kindHints.${form.kind}`)}</p>
-          </div>
-          {master === false && (
-            <p className="rounded-lg bg-amber-50 p-4">
-              {t("models.masterMissing")}
-            </p>
-          )}
+  return <section className="space-y-6">
+    <div className="flex flex-wrap items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{t("models.title")}</h1>
+      <button className={button} disabled={busy || !kb || !canBind} onClick={() => { setBindingDraft({ ...bindings }); setError(""); setModal("bindings"); }}>{t("models.bindings")}</button></div>
+    <p className="text-sm text-slate-600">{t("models.description")}</p>
+    {notice && <p role="status" className="text-blue-700">{notice}</p>}
+    {error && !modal && <p role="alert" className="text-red-700">{error}</p>}
+    <div role="tablist" aria-label={t("models.categories")} className="flex flex-wrap gap-3">
+      {kinds.map(value => <button key={value} role="tab" aria-selected={value === kind} aria-controls="models-panel"
+        disabled={busy} className={`${button} ${value === kind ? "bg-blue-50 text-blue-700 border-blue-600" : "bg-white"}`}
+        onClick={() => setKind(value)}>{t(`models.kinds.${value}`)}</button>)}</div>
+    <div id="models-panel" role="tabpanel" aria-label={t(`models.kinds.${kind}`)} className="space-y-4">
+      <div className="flex items-center justify-between gap-4"><h2 className="text-lg font-semibold">{t(`models.kinds.${kind}`)}</h2>
+        {admin && <button className="rounded-lg bg-blue-600 px-4 py-2 text-white" disabled={busy} onClick={() => edit()}>{t("models.new")}</button>}</div>
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white"><table className="w-full text-left text-sm">
+        <thead className="bg-slate-50"><tr>{["name", "model", "baseUrl", "actions"].map(key => <th className="px-4 py-3" key={key}>{t(`models.${key}`)}</th>)}</tr></thead>
+        <tbody>{models.filter(model => model.kind === kind).map(model => <tr className="border-t border-slate-100" key={model.id}>
+          <td className="px-4 py-4 font-medium">{model.name}</td><td className="px-4 py-4">{model.model ?? "—"}</td><td className="px-4 py-4 break-all">{model.baseUrl ?? "—"}</td>
+          <td className="px-4 py-4"><div className="flex flex-wrap gap-4">{admin && <>
+            <button disabled={busy} onClick={() => edit(model)}>{t("models.edit")}</button>
+            <button disabled={busy} onClick={() => { setSelected(model); setError(""); setModal("delete"); }}>{t("models.delete")}</button>
+            <button disabled={busy} onClick={() => void probe(model.id)}>{t("models.test")}</button></>}
+          </div>{probes[model.id] && <p role="status" className="mt-2 text-blue-700">{probes[model.id]}</p>}</td></tr>)}</tbody>
+      </table>{!models.some(model => model.kind === kind) && <p className="p-6 text-slate-500">{t("models.emptyKind")}</p>}</div>
+    </div>
+    {modal === "edit" && <Dialog title={t(profile ? "models.edit" : "models.new")} busy={busy} close={close}>
+      {master === false && <p className="mb-4 bg-amber-50 p-3">{t("models.masterMissing")}</p>}
+      {error && <p role="alert" className="mb-4 text-red-700">{error}</p>}
           <form
             onSubmit={save}
             className="grid gap-4 rounded-xl border border-slate-200 bg-white p-6 md:grid-cols-2"
@@ -337,10 +205,10 @@ export default function Models({
                 />
               </label>
             ))}
-            {form.kind === "CHAT" && <div className="space-y-2 md:col-span-2">
+            {form.kind === "CHAT" && <div className="grid gap-2 md:col-span-2">
               <label htmlFor="model-extra-body">{t("models.extraBody")}</label>
               <textarea id="model-extra-body" rows={6} maxLength={16384} disabled={busy}
-                className="font-mono text-sm" spellCheck={false} value={form.extraBody}
+                className="w-full rounded-lg border border-slate-300 p-3 font-mono text-sm" spellCheck={false} value={form.extraBody}
                 aria-invalid={!extraBodyValid} aria-describedby="model-extra-body-hint"
                 placeholder={'{\n  "chat_template_kwargs": {\n    "enable_thinking": false\n  }\n}'}
                 onChange={e => setForm({ ...form, extraBody: e.target.value })} />
@@ -348,9 +216,10 @@ export default function Models({
               {!extraBodyValid && <p role="alert" className="text-sm text-red-700">{t("models.extraBodyInvalid")}</p>}
             </div>}
             {profile && (
-              <label className="flex items-center gap-2">
+              <label className="flex items-center gap-2 md:col-span-2">
                 <input
                   type="checkbox"
+                  className="mt-0 w-auto shrink-0"
                   checked={form.clearApiKey}
                   onChange={(e) =>
                     setForm({ ...form, clearApiKey: e.target.checked })
@@ -359,124 +228,33 @@ export default function Models({
                 {t("models.clearKey")}
               </label>
             )}
-            <div className="flex items-end gap-3">
+            <div className="flex items-end justify-end gap-3 md:col-span-2">
               <button
                 disabled={busy || !extraBodyValid || form.maxOutputTokens >= form.contextTokens}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40"
               >
                 {t("models.save")}
               </button>
-              {profile && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    category(form.kind);
-                  }}
-                >
-                  {t("models.new")}
-                </button>
-              )}
+
             </div>
           </form>
-          <section aria-labelledby="model-versions-title" className="space-y-3">
-            <h2 id="model-versions-title" className="text-lg font-semibold">{t("models.versions")}</h2>
-            <p className="text-sm text-slate-500">{t("models.testHint")}</p>
-            <p className="text-sm text-slate-500">{t("models.deleteHint")}</p>
-            {models.filter(m => m.kind === form.kind).length === 0 && (
-              <p className="rounded-xl border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-500">{t("models.emptyKind")}</p>
-            )}
-            <ul className="space-y-3">
-              {models.filter(m => m.kind === form.kind).map(m => (
-                <li key={m.id} className="space-y-3 rounded-xl border border-slate-200 bg-white p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <h3 className="font-semibold">{m.name}</h3>
-                      <p className="text-sm text-slate-500">
-                        v{m.version} · {m.model} · {t("models.kinds." + m.kind)}
-                        {m.dimensions ? ` · ${m.dimensions}D` : ""} ·{" "}
-                        {t(m.keyConfigured ? "models.keySet" : "models.keyAbsent")}
-                      </p>
-                      <p className="break-all text-xs text-slate-500">{m.baseUrl}</p>
-                    </div>
-                    <div className="flex gap-3">
-                      <button disabled={busy} onClick={() => edit(m)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40">
-                        {t("models.edit")}
-                      </button>
-                      <button disabled={busy} onClick={() => void probe(m.id)} className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-40">
-                        {t(probes[m.id]?.state === "pending" ? "models.testing" : "models.test")}
-                      </button>
-                      {models.some(other => other.profileId === m.profileId && other.version > m.version) && (
-                        <button disabled={busy} onClick={() => { setDeleteError(""); setPendingDelete(m.id); }}
-                          className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700 disabled:opacity-40">
-                          {t("models.delete")}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {pendingDelete === m.id && (
-                    <div role="group" aria-label={t("models.confirmDelete")} className="rounded-lg bg-red-50 p-3">
-                      <p className="text-sm text-red-800">{t("models.deletePrompt", { name: m.name, version: m.version })}</p>
-                      {deleteError && <p role="alert" className="mt-2 text-sm text-red-700">{deleteError}</p>}
-                      <div className="mt-2 flex gap-3">
-                        <button disabled={busy} onClick={() => void remove(m.id)} className="text-sm text-red-700 disabled:opacity-40">{t(deleting ? "models.deleting" : "models.confirmDelete")}</button>
-                        <button disabled={busy} onClick={() => setPendingDelete("")} className="text-sm disabled:opacity-40">{t("models.cancelDelete")}</button>
-                      </div>
-                    </div>
-                  )}
-                  {probes[m.id] && (
-                    <p role={probes[m.id].state === "failure" ? "alert" : "status"}
-                      className={`text-sm ${probes[m.id].state === "failure" ? "text-red-700" : "text-blue-700"}`}>
-                      {probes[m.id].state === "success" ? t("models.testOk", { ms: probes[m.id].ms }) :
-                        t(probes[m.id].state === "pending" ? "models.testing" : "models.testFailed")}
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-6">
-            <h2 className="text-xl font-semibold">{t("models.bindings")}</h2>
-            <p className="text-sm text-slate-500">{t("models.bindingHint")}</p>
-            <div className="grid gap-4 md:grid-cols-2">
-              {roles.map((role) => (
-                <label key={role}>
-                  {t("models.roles." + role)}
-                  <select
-                    value={bindings[role] || ""}
-                    onChange={(e) =>
-                      setBindings({ ...bindings, [role]: e.target.value })
-                    }
-                  >
-                    <option value="">{t("models.unbound")}</option>
-                    {models
-                      .filter(
-                        (m) =>
-                          m.kind ===
-                          (role === "embedding"
-                            ? "EMBEDDING"
-                            : role === "rerank"
-                              ? "RERANK"
-                              : "CHAT"),
-                      )
-                      .map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} · v{m.version} · {m.model}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-            <button
-              disabled={busy}
-              onClick={() => void bind()}
-              className="rounded-lg border border-slate-300 px-4 py-2"
-            >
-              {t("models.saveBindings")}
-            </button>
-          </div>
-        </>
-      )}
-    </section>
-  );
+    </Dialog>}
+    {modal === "bindings" && <Dialog title={t("models.bindings")} busy={busy} close={close}>
+      <p className="mb-3 font-medium">{t("models.bindingScope", { name: kbName ?? kb })}</p>
+      <p className="mb-5 text-sm text-slate-500">{t("models.bindingHint")}</p>
+      {error && <p role="alert" className="mb-3 text-red-700">{error}</p>}
+      <form onSubmit={e => { e.preventDefault(); void bind(); }} className="grid gap-4 sm:grid-cols-2">
+        {roles.map(role => <label key={role}>{t(`models.roles.${role}`)}<select disabled={busy || !canBind} value={bindingDraft[role] || ""}
+          onChange={e => setBindingDraft(old => ({ ...old, [role]: e.target.value }))}>
+          <option value="">{t("models.unbound")}</option>{models.filter(model => model.kind === (role === "embedding" ? "EMBEDDING" : role === "rerank" ? "RERANK" : "CHAT"))
+            .map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>)}
+        <div className="sm:col-span-2"><button className={button} disabled={busy || !canBind}>{t("models.saveBindings")}</button></div>
+      </form>
+    </Dialog>}
+    {modal === "delete" && selected && <Dialog title={t("models.confirmDelete")} busy={busy} close={close}>
+      <p className="mb-4">{t("models.deletePrompt", { name: selected.name })}</p>
+      {error && <p role="alert" className="mb-4 text-red-700">{error}</p>}
+      <button className={button} disabled={busy} onClick={() => void remove()}>{t(busy ? "models.deleting" : "models.confirmDelete")}</button>
+    </Dialog>}
+  </section>;
 }

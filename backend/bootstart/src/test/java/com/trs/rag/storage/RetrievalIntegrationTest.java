@@ -96,7 +96,7 @@ class RetrievalIntegrationTest {
 
   @BeforeEach
   void setup() throws Exception {
-    jdbc.update("DELETE FROM rag_model_binding");
+    jdbc.update("DELETE FROM rag_knowledge_base_model_binding");
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     provider = Executors.newVirtualThreadPerTaskExecutor();
     server.setExecutor(provider);
@@ -216,8 +216,9 @@ class RetrievalIntegrationTest {
         });
     server.start();
     chat = model("CHAT", "keyword", 0);
-    models.bind(new HashMap<>(Map.of("extract", chat, "keywords", chat, "summary", chat)), "admin");
+
     kb = bases.create("admin", "retrieval fixture", "").getId();
+    models.bind(kb, new HashMap<>(Map.of("extract", chat, "keywords", chat, "summary", chat)), "admin");
     ingest("english.md", "Alice uses LightRAG.");
     ingest("中文.md", "张三使用知识图谱。");
     ingest("图谱.md", "向量检索支持知识融合。");
@@ -279,7 +280,7 @@ class RetrievalIntegrationTest {
 
   UUID seed(int dimensions, String prefix) {
     UUID embed = model("EMBEDDING", "embed" + dimensions, dimensions);
-    models.bind(Map.of("embedding", embed), "admin");
+    models.bind(kb, Map.of("embedding", embed), "admin");
     UUID gen = UUID.fromString(indexes.create(kb, "admin").get("id").toString());
     UUID a = uuid(prefix + "Alice"), l = uuid(prefix + "LightRAG"), g = uuid(prefix + "知识图谱");
     UUID c1 = chunks.get("Alice uses LightRAG."),
@@ -840,7 +841,7 @@ class RetrievalIntegrationTest {
   UUID readyAnswer() {
     UUID gen = seed(3, "");
     indexes.activate(kb, gen, null, "admin");
-    models.bind(Map.of("answer", model("CHAT", "answer-model", 0)), "admin");
+    models.bind(kb, Map.of("answer", model("CHAT", "answer-model", 0)), "admin");
     return gen;
   }
 
@@ -889,7 +890,7 @@ class RetrievalIntegrationTest {
   @Test
   void rerankRunsBeforeChunkTopKAndRebuildsReferencesWithSafeFailure() {
     readyAnswer();
-    models.bind(Map.of("rerank", model("RERANK", "rerank-model", 0)), "admin");
+    models.bind(kb, Map.of("rerank", model("RERANK", "rerank-model", 0)), "admin");
     var q = answerRequest();
     q.setEnableRerank(true);
     q.setChunkTopK(1);
@@ -963,7 +964,7 @@ class RetrievalIntegrationTest {
     configured.setTimeoutSeconds(5);
     configured.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
     UUID answer = UUID.fromString(models.save(null, configured, "admin").get("id").toString());
-    models.bind(Map.of("answer", answer), "admin");
+    models.bind(kb, Map.of("answer", answer), "admin");
     var session = login();
     Map<String, Object> body = new LinkedHashMap<>(Map.of("query", "LightRAG 是什么？", "mode", "naive",
         "requestId", UUID.randomUUID()));
@@ -1102,12 +1103,12 @@ class RetrievalIntegrationTest {
 
   @Test
   void answerAndGenerationVersionsRemainCapturedWhenBindingsAndIndexSwitch() {
-    UUID old = readyAnswer(), oldAnswer = models.snapshot().get("answer");
+    UUID old = readyAnswer(), oldAnswer = models.snapshot(kb).get("answer");
     UUID next = seed(4, "NEW ");
     UUID nextAnswer = model("CHAT", "answer-new", 0);
     switchIndex.set(
         () -> {
-          models.bind(Map.of("answer", nextAnswer), "admin");
+          models.bind(kb, Map.of("answer", nextAnswer), "admin");
           indexes.activate(kb, next, old, "admin");
         });
     var result = answers.query(kb, "admin", answerRequest());

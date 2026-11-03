@@ -82,11 +82,11 @@ it("shows four sidebar entries with document processing integrated into the list
   expect(screen.getByRole("button", { name: "Document management" })).toBeTruthy();
 });
 
-it("preserves model administration permissions and switches knowledge base context", async () => {
+it("allows owner model bindings and switches knowledge base context", async () => {
   mockApi([base, { ...base, id: "kb2", name: "另一个知识库" }]);
   render(<Workspace onSessionExpired={() => {}} />);
   await screen.findByRole("navigation", { name: "功能菜单" });
-  expect((screen.getByRole("button", { name: "模型配置" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "模型配置" }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.change(screen.getByLabelText("当前知识库"), { target: { value: "kb2" } });
   await screen.findByRole("heading", { name: "问答内容 kb2" });
   expect(screen.queryByRole("heading", { name: "问答内容 kb1" })).toBeNull();
