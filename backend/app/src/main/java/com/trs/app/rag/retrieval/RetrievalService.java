@@ -200,7 +200,9 @@ public class RetrievalService {
       for (var chunk : raw.getVectors()) scores.put(chunk.getId(), chunk.getScore());
       List<Chunk> hydrated = repository.hydrate(snapshot, actor, merged, scores);
       checkDeadline(deadline);
-      ContextPlan plan = planner.finish(query, request, graph, selector.apply(hydrated));
+      List<Chunk> selected = selector.apply(hydrated);
+      graph = planner.reserveEvidence(query, request, graph, selected);
+      ContextPlan plan = planner.finish(query, request, graph, selected);
       for (var chunk : plan.getChunks()) {
         String id = chunk.get("chunk_id").toString();
         List<String> paths = new ArrayList<>();

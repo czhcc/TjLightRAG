@@ -6,7 +6,7 @@ import java.util.UUID;
 import lombok.*;
 
 /**
- * Single-turn query; history and caller-supplied system instructions are unsupported. @author agent
+ * Query with an optional private conversation; history is always read by the server. @author czhcc
  */
 @Getter
 @Setter
@@ -32,6 +32,7 @@ public class QueryRequest extends RetrievalRequest {
   public void usePlanningBudget(int tokens) { super.setMaxTotalTokens(tokens); }
 
   private UUID requestId;
+  private UUID conversationId;
 
   @NotNull
   @Pattern(regexp = "answer|context|prompt")

@@ -75,6 +75,37 @@ class QueryServiceTest {
   }
 
   @Test
+  void conversationHistoryRewritesRetrievalAndAppearsBeforeTheCurrentQuestion() {
+    var history = List.of(Map.of("role", "user", "content", "介绍张三"),
+        Map.of("role", "assistant", "content", "张三从事图谱研究。"));
+    when(gateway.chat(any(), any())).thenReturn("张三的研究成果有哪些？", "研究成果[1]");
+    when(retrieval.query(eq(kb), eq("admin"), any(), any())).thenAnswer(call -> {
+      assertEquals("张三的研究成果有哪些？", ((QueryRequest) call.getArgument(2)).getQuery());
+      return evidence("success");
+    });
+    request.setQuery("他的成果呢？");
+    var out = service.query(kb, "admin", request, history);
+    assertEquals("研究成果[1]", out.getAnswer());
+    assertEquals("他的成果呢？", request.getQuery());
+    verify(gateway).chat(any(), argThat(messages -> messages.size() == 4 && messages.getFirst().get("content").startsWith("system:")
+        && messages.get(1).equals(history.get(0)) && messages.get(2).equals(history.get(1))
+        && messages.get(3).get("content").equals("他的成果呢？")));
+  }
+
+  @Test
+  void oversizedLatestHistoryIsShortenedWithoutLosingTheConversation() {
+    when(tokenizer.encode("oversized")).thenReturn(new int[100000]);
+    returns(evidence("success"));
+    when(gateway.chat(any(), any())).thenReturn("事实[1]");
+    var history = List.of(Map.of("role", "user", "content", "oversized"),
+        Map.of("role", "assistant", "content", "old"));
+    service.query(kb, "admin", request, history);
+    verify(gateway, times(2)).chat(any(), argThat(messages -> messages.size() == 4
+        && !messages.get(1).get("content").equals("oversized")
+        && messages.get(1).get("content").contains("history truncated")));
+  }
+
+  @Test
   void omittedBudgetUsesConfiguredContextAndKeepsLargeOutputLimit() {
     var configured = new ModelVersion(modelId, UUID.randomUUID(), "CHAT", "https://example.com/v1",
         "answer", "", 0, 26000, 20000, 10);

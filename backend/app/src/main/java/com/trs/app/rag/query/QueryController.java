@@ -8,12 +8,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-/** Session and CSRF protected single-turn RAG generation APIs. @author agent */
+/** Session and CSRF protected RAG APIs with optional private conversations. @author czhcc */
 @RestController
 @RequestMapping("/api/knowledge-bases/{kb}/query")
 @RequiredArgsConstructor
 public class QueryController {
-  private final QueryService service;
+  private final ConversationQueries service;
   private final QueryStreams streams;
 
   /** Generates a bounded answer or context/prompt preview without caching. @author agent */

@@ -64,6 +64,8 @@ class RetrievalIntegrationTest {
   }
 
   @Autowired QueryService answers;
+  @Autowired ConversationService conversations;
+  @Autowired ConversationQueries conversationQueries;
   @Autowired QueryStreams streams;
   @Autowired RetrievalService retrieval;
   @Autowired RetrievalRepository repository;
@@ -92,7 +94,106 @@ class RetrievalIntegrationTest {
   CountDownLatch answerEntered = new CountDownLatch(1), answerReleased = new CountDownLatch(1);
   List<String> answerModels = new CopyOnWriteArrayList<>();
   AtomicReference<Runnable> switchIndex = new AtomicReference<>();
+  List<tools.jackson.databind.JsonNode> rewriteMessages = new CopyOnWriteArrayList<>();
+  List<tools.jackson.databind.JsonNode> answerMessages = new CopyOnWriteArrayList<>();
   volatile CountDownLatch entered, release;
+
+  @Test
+  void conversationsArePrivateToUserAndKnowledgeBaseAndOnlyCompletedTurnsBecomeHistory() {
+    UUID id = (UUID) conversations.create(kb, "admin").get("id");
+    UUID request = UUID.randomUUID();
+    assertTrue(conversations.begin(kb, id, "admin", request, "介绍张三").history().isEmpty());
+    assertThrows(RetrievalFailure.class, () -> conversations.begin(kb, id, "admin", UUID.randomUUID(), "并发问题"));
+    var result = new QueryResult("success", "张三研究图谱。", true, chat, null, "disabled", "disabled", null, List.of(), List.of(), List.of());
+    conversations.complete(kb, id, "admin", request, result);
+    UUID failed = UUID.randomUUID();
+    assertEquals(2, conversations.begin(kb, id, "admin", failed, "他的成果呢？").history().size());
+    conversations.fail(kb, id, "admin", failed, "未完成内容", false);
+    assertEquals(2, conversations.history(kb, id, "admin").size());
+    assertEquals("failed", conversations.turns(kb, id, "admin", null).getLast().get("status"));
+    assertEquals("未完成内容", conversations.turns(kb, id, "admin", null).getLast().get("answer"));
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'history-reader',password_hash FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "history-reader", KnowledgeRole.READER);
+    assertTrue(conversations.list(kb, "history-reader", 0).isEmpty());
+    assertThrows(RagAccessException.class, () -> conversations.turns(kb, id, "history-reader", null));
+    UUID other = bases.create("admin", "other history scope", "").getId();
+    assertThrows(RagAccessException.class, () -> conversations.history(other, id, "admin"));
+    UUID own = (UUID) conversations.create(kb, "history-reader").get("id");
+    assertTrue(conversations.history(kb, own, "history-reader").isEmpty());
+  }
+
+  @Test
+  void expiredConversationTurnCannotPublishOrBlockTheNextQuestion() {
+    UUID id = (UUID) conversations.create(kb, "admin").get("id");
+    UUID first = UUID.randomUUID(), second = UUID.randomUUID();
+    conversations.begin(kb, id, "admin", first, "first");
+    jdbc.update("UPDATE rag_conversation_turn SET expires_at=CURRENT_TIMESTAMP-INTERVAL '1 second' WHERE id=?", first);
+    conversations.begin(kb, id, "admin", second, "second");
+    var result = new QueryResult("success", "late", true, chat, null, "disabled", "disabled", null, List.of(), List.of(), List.of());
+    assertThrows(RetrievalFailure.class, () -> conversations.complete(kb, id, "admin", first, result));
+    conversations.fail(kb, id, "admin", first, "late partial", false);
+    assertEquals("running", conversations.turns(kb, id, "admin", null).getLast().get("status"));
+    conversations.fail(kb, id, "admin", second, "", true);
+    assertTrue(conversations.history(kb, id, "admin").isEmpty());
+  }
+
+  @Test
+  void conversationAndTurnPagesAreBoundedWhilePromptHistoryUsesOnlyTheLatestTenPairs() {
+    List<Object[]> rows = new ArrayList<>();
+    for (int i = 0; i < 52; i++) rows.add(new Object[] {kb, UUID.randomUUID()});
+    jdbc.batchUpdate("INSERT INTO rag_conversation(knowledge_base_id,id,user_id) SELECT ?,?,id FROM app_user WHERE username='admin'", rows);
+    assertEquals(50, conversations.list(kb, "admin", 0).size());
+    assertEquals(2, conversations.list(kb, "admin", 1).size());
+    UUID id = (UUID) rows.getFirst()[1]; rows.clear();
+    for (int i = 1; i <= 52; i++) rows.add(new Object[] {kb, id, UUID.randomUUID(), i, "Q" + i, "A" + i});
+    jdbc.batchUpdate("INSERT INTO rag_conversation_turn(knowledge_base_id,conversation_id,id,turn_no,question,answer,status,expires_at)"
+        + " VALUES (?,?,?,?,?,?,'success',CURRENT_TIMESTAMP)", rows);
+    var recent = conversations.turns(kb, id, "admin", null);
+    assertEquals(50, recent.size());
+    assertEquals(3L, recent.getFirst().get("sequence"));
+    var earlier = conversations.turns(kb, id, "admin", 3L);
+    assertEquals(2, earlier.size());
+    assertEquals(1L, earlier.getFirst().get("sequence"));
+    var history = conversations.history(kb, id, "admin");
+    assertEquals(20, history.size());
+    assertEquals("Q43", history.getFirst().get("content"));
+    assertEquals("A52", history.getLast().get("content"));
+  }
+
+  @Test
+  void httpConversationRestoresTurnsAndUsesHistoryForFollowupRetrievalAndPrompt() throws Exception {
+    readyAnswer();
+    var session = login();
+    var created = session.client().send(post(session, "/conversations", Map.of()), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, created.statusCode());
+    UUID id = UUID.fromString(json.readTree(created.body()).path("id").asText());
+    var q = answerRequest(); q.setConversationId(id); q.setQuery("Tell me about Alice");
+    var first = session.client().send(post(session, "/query/stream", q), HttpResponse.BodyHandlers.ofString());
+    assertTrue(first.body().contains("event:done"));
+    assertEquals(2, conversations.history(kb, id, "admin").size());
+    q.setRequestId(UUID.randomUUID()); q.setQuery("What does she research?"); q.setPreview("prompt");
+    var preview = session.client().send(post(session, "/query", q), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, preview.statusCode());
+    assertEquals(4, json.readTree(preview.body()).path("prompt").size());
+    assertEquals(1, conversations.turns(kb, id, "admin", null).size());
+    q.setPreview("answer");
+    var second = session.client().send(post(session, "/query/stream", q), HttpResponse.BodyHandlers.ofString());
+    assertTrue(second.body().contains("event:done"));
+    assertFalse(rewriteMessages.isEmpty());
+    assertEquals(4, answerMessages.getLast().size());
+    assertEquals("Tell me about Alice", answerMessages.getLast().path(1).path("content").asText());
+    assertTrue(embeddingInputs.stream().flatMap(List::stream).anyMatch("Alice LightRAG research"::equals));
+    var restored = session.client().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+        + "/api/knowledge-bases/" + kb + "/conversations/" + id + "/turns")).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, restored.statusCode());
+    assertEquals(2, json.readTree(restored.body()).size());
+    assertTrue(json.readTree(restored.body()).path(0).path("result").path("retrieval").has("generationId"));
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'history-api-reader',password_hash FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "history-api-reader", KnowledgeRole.READER);
+    var reader = login("history-api-reader");
+    assertEquals(404, reader.client().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+        + "/api/knowledge-bases/" + kb + "/conversations/" + id + "/turns")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+  }
 
   @BeforeEach
   void setup() throws Exception {
@@ -148,7 +249,12 @@ class RetrievalIntegrationTest {
               for (int i = body.path("documents").size() - 1; i >= 0; i--)
                 ranks.add(Map.of("index", badRerank.get() ? 999 : i, "relevance_score", .9));
               response = json.writeValueAsString(Map.of("results", ranks));
+            } else if (body.path("messages").path(0).path("content").asText().startsWith("Rewrite the final user question")) {
+              rewriteMessages.add(body.path("messages"));
+              response = json.writeValueAsString(Map.of("choices", List.of(Map.of("finish_reason", "stop",
+                  "message", Map.of("role", "assistant", "content", "Alice LightRAG research")))));
             } else if (body.path("model").asText().startsWith("answer")) {
+              answerMessages.add(body.path("messages"));
               answerCalls.incrementAndGet();
               answerModels.add(body.path("model").asText());
               if (body.path("stream").asBoolean()) {
@@ -910,6 +1016,10 @@ class RetrievalIntegrationTest {
   record Session(HttpClient client, String csrf) {}
 
   Session login() throws Exception {
+    return login("admin");
+  }
+
+  Session login(String username) throws Exception {
     var c =
         HttpClient.newBuilder()
             .cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL))
@@ -921,7 +1031,7 @@ class RetrievalIntegrationTest {
                 HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/auth/login"))
                     .header("X-CSRF-TOKEN", csrf)
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString("username=admin&password=123456"))
+                    .POST(HttpRequest.BodyPublishers.ofString("username=" + username + "&password=123456"))
                     .build(),
                 HttpResponse.BodyHandlers.ofString())
             .statusCode());
@@ -1042,6 +1152,8 @@ class RetrievalIntegrationTest {
     var owner = login();
     var other = login();
     var q = answerRequest();
+    UUID conversation = (UUID) conversations.create(kb, "admin").get("id");
+    q.setConversationId(conversation);
     var running =
         owner
             .client()
@@ -1067,6 +1179,8 @@ class RetrievalIntegrationTest {
     assertTrue(answerReleased.await(3, TimeUnit.SECONDS));
     var cancelled = running.get(5, TimeUnit.SECONDS);
     assertFalse(cancelled.body().contains("event:done"));
+    assertEquals("cancelled", conversations.turns(kb, conversation, "admin", null).getFirst().get("status"));
+    assertTrue(conversations.history(kb, conversation, "admin").isEmpty());
     blockStream.set(false);
     assertEquals("success", answers.query(kb, "admin", answerRequest()).getStatus());
   }
