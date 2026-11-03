@@ -12,6 +12,25 @@ import lombok.*;
 @Setter
 @NoArgsConstructor
 public class QueryRequest extends RetrievalRequest {
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Getter(AccessLevel.NONE)
+  @Setter(AccessLevel.NONE)
+  private boolean explicitTotalBudget;
+
+  /** Records a caller budget separately from the inherited retrieval default. @author czhcc */
+  @Override
+  public void setMaxTotalTokens(int tokens) {
+    super.setMaxTotalTokens(tokens);
+    explicitTotalBudget = true;
+  }
+
+  /** Distinguishes omitted budgets from explicit API limits. @author czhcc */
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  public boolean hasExplicitTotalBudget() { return explicitTotalBudget; }
+
+  /** Applies an internal planning limit without changing the caller's budget policy. @author czhcc */
+  public void usePlanningBudget(int tokens) { super.setMaxTotalTokens(tokens); }
+
   private UUID requestId;
 
   @NotNull

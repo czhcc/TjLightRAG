@@ -110,6 +110,7 @@ const resources = {
       },
       query: {
         title: "知识库问答",
+        budgetFailure: "问答 token 预算不足，请检查回答模型的上下文大小、最大输出 token 和请求预算；已显示的部分内容尚未完成。",
         hint: "每次提问独立回答，依据当前索引中的文档生成；可展开证据并回看原文。",
         question: "问答问题",
         mode: "问答模式",
@@ -426,6 +427,7 @@ const resources = {
       },
       query: {
         title: "Knowledge base Q&A",
+        budgetFailure: "Insufficient token budget. Check the answer model's context size, maximum output tokens and request budget. Any partial answer is incomplete.",
         hint: "Each question is answered independently using the current index. Expand evidence to view original sources.",
         question: "Question",
         mode: "Answer mode",

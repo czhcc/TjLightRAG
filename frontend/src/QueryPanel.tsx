@@ -88,6 +88,8 @@ export default function QueryPanel({
   }, [kb]);
   function fail(e: unknown) {
     if (e instanceof ApiError && e.status === 401) onSessionExpired();
+    else if (e instanceof ApiError && ["query_budget_too_small", "retrieval_budget_too_small", "model_context_exceeded"].includes(e.code ?? ""))
+      setError(t("query.budgetFailure"));
     else setError(t("query.failure"));
   }
   async function generate(event: FormEvent, kind = "answer") {
