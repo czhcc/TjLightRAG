@@ -13,6 +13,54 @@ import tools.jackson.databind.json.JsonMapper;
 /** Candidate comparisons against frozen, actual upstream outputs. @author agent */
 class GraphMergeTest {
   final JsonMapper json = JsonMapper.builder().build();
+  @Test
+  void sameNameDifferentTypesKeepSeparateIdsAndSources() {
+    var gateway = mock(ModelGateway.class);
+    when(gateway.embed(any(), anyString())).thenReturn(new float[] {1, 0, 0});
+    var tokenizer = mock(RagTokenizer.class);
+    when(tokenizer.encode(anyString())).thenReturn(new int[] {1});
+    UUID c1 = UUID.randomUUID(), c2 = UUID.randomUUID();
+    var parser = new ExtractionParser();
+    var a = new JsonExtractionStream(parser, new Extraction(), ignored -> {});
+    a.accept("""
+        {"entities":[{"name":"长安","type":"地","description":"城市","attributes":[]},{"name":"长安","type":"网","description":"公司","attributes":[]}],
+         "relations":[{"source":{"name":"长安","type":"地"},"target":{"name":"长安","type":"网"},"type":"位于","keywords":"城市,企业","description":"企业位于城市"}]}
+        """);
+    var b = new Extraction(List.of(new Extraction.Entity("长安", "地", "历史城市")), List.of());
+    var graph = new GraphAssembler(gateway, tokenizer).assemble(new LinkedHashMap<>(Map.of(c1, a.finish(), c2, b)), null, null, () -> {});
+    assertEquals(2, graph.getEntities().size());
+    var city = graph.getEntities().stream().filter(n -> n.getType().equals("地")).findFirst().orElseThrow();
+    var org = graph.getEntities().stream().filter(n -> n.getType().equals("网")).findFirst().orElseThrow();
+    assertNotEquals(city.getId(), org.getId());
+    assertEquals(Set.of(c1, c2), new HashSet<>(city.getSources()));
+    assertEquals(List.of(c1), org.getSources());
+    assertEquals(Set.of(city.getId(), org.getId()), Set.of(graph.getRelations().getFirst().getSource(), graph.getRelations().getFirst().getTarget()));
+  }
+
+  @Test
+  void mergesAttributeValuesAndRelationshipTypesWithoutCountingAChunkTwice() {
+    var gateway = mock(ModelGateway.class);
+    when(gateway.embed(any(), anyString())).thenReturn(new float[] {1, 0, 0});
+    var tokenizer = mock(RagTokenizer.class);
+    when(tokenizer.encode(anyString())).thenReturn(new int[] {1});
+    var first = new Extraction(List.of(
+        new Extraction.Entity("张三", "人", "工程师", Map.of("职业", "工程师")),
+        new Extraction.Entity("甲公司", "网", "公司")), List.of(
+        new Extraction.Relation("张三", "甲公司", "工作", "任职于公司", 1, "任职"),
+        new Extraction.Relation("张三", "甲公司", "创办", "创办公司", 1, "创办")));
+    var second = new Extraction(List.of(
+        new Extraction.Entity("张三", "人", "研究员", Map.of("职业", "研究员"))), List.of());
+    Map<UUID, Extraction> chunks = new LinkedHashMap<>();
+    chunks.put(UUID.randomUUID(), first);
+    chunks.put(UUID.randomUUID(), second);
+    var graph = new GraphAssembler(gateway, tokenizer).assemble(chunks, null, null, () -> {});
+    var person = graph.getEntities().stream().filter(e -> e.getName().equals("张三")).findFirst().orElseThrow();
+    assertEquals(Set.of("工程师", "研究员"), new HashSet<>(person.getAttributes().stream().filter(a -> a.getName().equals("职业")).map(a -> a.getValue().asText()).toList()));
+    assertTrue(person.getDescription().contains("职业"));
+    var edge = graph.getRelations().getFirst();
+    assertEquals(Set.of("任职", "创办"), new HashSet<>(edge.getTypes()));
+    assertEquals(1, edge.getWeight());
+  }
 
   @Test
   void entityAndRelationCandidatesMatchAllEightFrozenUpstreamCases() throws Exception {
@@ -113,8 +161,7 @@ class GraphMergeTest {
     c.put(
         UUID.randomUUID(),
         new Extraction(List.of(new Extraction.Entity("A", "concept", "other")), List.of()));
-    assertEquals(
-        "concept", graphs.assemble(c, null, null, () -> {}).getEntities().getFirst().getType());
+    assertEquals(2, graphs.assemble(c, null, null, () -> {}).getEntities().size());
   }
 
   @Test

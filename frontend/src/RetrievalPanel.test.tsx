@@ -6,6 +6,20 @@ beforeEach(async () => {
   vi.restoreAllMocks();
   await i18n.changeLanguage("zh");
 });
+it("distinguishes same-name endpoint types and renders typed attribute values", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ok: true, status: 200, json: async () => url.endsWith("/csrf") ? {token: "csrf"} : {
+    status: "success", mode: "mix", generationId: "gen", embeddingVersion: "emb", chunks: [], references: [], context: "",
+    entities: [{id: "city", name: "长安", type: "地", description: "城市", attributes: [{name: "人口", type: "integer", value: 35}]}],
+    relations: [{id: "edge", source: "长安", target: "长安", sourceType: "地", targetType: "网", types: ["位于"], description: "企业所在地", weight: 1}],
+    metadata: {branches: [], budget: {totalTokens: 100, maxTotalTokens: 16000}},
+  }})));
+  render(<RetrievalPanel kb="kb1" onSessionExpired={() => {}} />);
+  fireEvent.change(screen.getByLabelText("检索问题"), {target: {value: "长安"}});
+  fireEvent.click(screen.getByRole("button", {name: "执行检索"}));
+  await screen.findByText("长安（地） ↔ 长安（网）");
+  expect(screen.getByText("人口（integer）：35")).toBeTruthy();
+  expect(screen.getByText(/位于/)).toBeTruthy();
+});
 it("posts the selected mode with CSRF and renders evidence instead of a generated answer", async () => {
   const calls: { url: string; options?: RequestInit }[] = [];
   vi.stubGlobal(

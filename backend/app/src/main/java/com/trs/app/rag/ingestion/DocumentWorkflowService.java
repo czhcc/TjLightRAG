@@ -21,7 +21,7 @@ public class DocumentWorkflowService {
   public static void enqueue(JdbcTemplate jdbc, UUID kb, String actor, boolean refresh) {
     jdbc.update("INSERT INTO rag_document_index_queue(knowledge_base_id,requested_by,refresh_required)"
         + " SELECT ?,id,? FROM app_user WHERE username=? ON CONFLICT (knowledge_base_id) DO UPDATE"
-        + " SET requested_by=EXCLUDED.requested_by,dirty=TRUE,error_code=NULL,revision=NEXTVAL('rag_document_pipeline_revision'),"
+        + " SET requested_by=EXCLUDED.requested_by,document_id=NULL,dirty=TRUE,error_code=NULL,revision=NEXTVAL('rag_document_pipeline_revision'),"
         + " refresh_required=rag_document_index_queue.refresh_required OR EXCLUDED.refresh_required", kb, refresh, actor);
   }
 
@@ -49,15 +49,22 @@ public class DocumentWorkflowService {
           actor, kb, row.get("job_id"));
     }
     jdbc.update("UPDATE rag_document SET pipeline_requested=TRUE,pipeline_paused=?,pipeline_error=NULL,"
-        + " deleted=? WHERE knowledge_base_id=? AND id=?", action.equals("pause"), action.equals("delete"), kb, document);
+        + " pipeline_rebuild=?,deleted=? WHERE knowledge_base_id=? AND id=?", action.equals("pause"),
+        action.equals("rebuild"), action.equals("delete"), kb, document);
     var queue = jdbc.queryForList("SELECT generation_id FROM rag_document_index_queue WHERE knowledge_base_id=?", kb);
     if (!queue.isEmpty() && queue.getFirst().get("generation_id") instanceof UUID generation)
       indexes.cancelAutomatic(kb, generation, actor);
+    UUID previous = null;
     if (action.equals("delete")) {
+      previous = jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb);
       // Prevent fresh queries from reading the deleted document through the previous generation.
       jdbc.update("UPDATE rag_knowledge_base SET active_generation_id=NULL WHERE id=?", kb);
     }
     enqueue(jdbc, kb, actor, action.equals("delete"));
+    if (Set.of("run", "rebuild").contains(action))
+      jdbc.update("UPDATE rag_document_index_queue SET document_id=? WHERE knowledge_base_id=?", document, kb);
+    if (action.equals("delete") && previous != null)
+      jdbc.update("UPDATE rag_document_index_queue SET expected_generation_id=? WHERE knowledge_base_id=?", previous, kb);
   }
 
   /** Lists bounded durable coordinators; the worker never holds model work in a transaction. @author czhcc */
@@ -66,7 +73,8 @@ public class DocumentWorkflowService {
         + " WHERE q.error_code IS NULL AND (q.generation_id IS NOT NULL OR q.refresh_required OR EXISTS"
         + " (SELECT 1 FROM rag_document d JOIN rag_ingestion_job j ON j.knowledge_base_id=d.knowledge_base_id"
         + " AND j.revision_id=d.current_revision_id WHERE d.knowledge_base_id=q.knowledge_base_id"
-        + " AND d.pipeline_requested AND NOT d.pipeline_paused AND NOT d.deleted AND j.status='processed'))"
+        + " AND (q.document_id IS NULL OR d.id=q.document_id)"
+        + " AND d.pipeline_requested AND d.pipeline_error IS NULL AND NOT d.pipeline_paused AND NOT d.deleted AND j.status='processed'))"
         + " ORDER BY q.knowledge_base_id LIMIT 100");
   }
 
@@ -93,10 +101,13 @@ public class DocumentWorkflowService {
         generation = null;
       } else if (phase.equals("ready")) {
         indexes.activateAutomatic(kb, generation, (UUID) queue.get("expected_generation_id"), actor);
-        jdbc.update("UPDATE rag_document d SET pipeline_requested=FALSE,pipeline_error=NULL WHERE"
+        jdbc.update("UPDATE rag_document d SET pipeline_requested=FALSE,pipeline_rebuild=FALSE,pipeline_error=NULL WHERE"
+            + " d.pipeline_error IS NULL AND"
+            + " (?::UUID IS NULL OR d.id=?) AND"
             + " d.knowledge_base_id=? AND NOT d.deleted AND NOT d.pipeline_paused AND EXISTS"
             + " (SELECT 1 FROM rag_index_document i WHERE i.knowledge_base_id=d.knowledge_base_id"
-            + " AND i.generation_id=? AND i.document_id=d.id AND i.revision_id=d.current_revision_id)", kb, generation);
+            + " AND i.generation_id=? AND i.document_id=d.id AND i.revision_id=d.current_revision_id)",
+            queue.get("document_id"), queue.get("document_id"), kb, generation);
         jdbc.update("UPDATE rag_document_index_queue SET generation_id=NULL,refresh_required=FALSE"
             + " WHERE knowledge_base_id=?", kb);
         clean(kb);
@@ -108,17 +119,22 @@ public class DocumentWorkflowService {
     }
     // Pending/paused revisions do not block other documents. Keep their last published revision.
     Map<UUID, UUID> revisions = new LinkedHashMap<>();
-    for (var row : jdbc.queryForList("SELECT d.id,CASE WHEN j.status='processed' AND NOT d.pipeline_paused"
+    for (var row : jdbc.queryForList("SELECT d.id,CASE WHEN j.status='processed' AND d.pipeline_requested"
+        + " AND d.pipeline_error IS NULL AND NOT d.pipeline_paused AND (q.document_id IS NULL OR d.id=q.document_id)"
         + " THEN d.current_revision_id ELSE old.revision_id END AS revision_id FROM rag_document d"
         + " JOIN rag_ingestion_job j ON j.knowledge_base_id=d.knowledge_base_id AND j.revision_id=d.current_revision_id"
-        + " JOIN rag_knowledge_base b ON b.id=d.knowledge_base_id LEFT JOIN rag_index_document old"
-        + " ON old.knowledge_base_id=b.id AND old.generation_id=b.active_generation_id AND old.document_id=d.id"
+        + " JOIN rag_knowledge_base b ON b.id=d.knowledge_base_id JOIN rag_document_index_queue q ON q.knowledge_base_id=b.id"
+        + " LEFT JOIN rag_index_document old ON old.knowledge_base_id=b.id"
+        + " AND old.generation_id=COALESCE(b.active_generation_id,CASE WHEN q.refresh_required THEN q.expected_generation_id END)"
+        + " AND old.document_id=d.id"
         + " WHERE d.knowledge_base_id=? AND NOT d.deleted ORDER BY d.id", kb)) {
       if (row.get("revision_id") instanceof UUID captured) revisions.put((UUID) row.get("id"), captured);
     }
     boolean ready = Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM rag_document d"
         + " JOIN rag_ingestion_job j ON j.knowledge_base_id=d.knowledge_base_id AND j.revision_id=d.current_revision_id"
-        + " WHERE d.knowledge_base_id=? AND d.pipeline_requested AND NOT d.pipeline_paused AND NOT d.deleted"
+        + " JOIN rag_document_index_queue q ON q.knowledge_base_id=d.knowledge_base_id"
+        + " WHERE d.knowledge_base_id=? AND d.pipeline_requested AND d.pipeline_error IS NULL AND NOT d.pipeline_paused AND NOT d.deleted"
+        + " AND (q.document_id IS NULL OR d.id=q.document_id)"
         + " AND j.status='processed')", Boolean.class, kb));
     if (!ready && !Boolean.TRUE.equals(queue.get("refresh_required"))) { clean(kb); return; }
     if (revisions.isEmpty()) {
@@ -135,7 +151,8 @@ public class DocumentWorkflowService {
   private void clean(UUID kb) {
     jdbc.update("DELETE FROM rag_document_index_queue q WHERE knowledge_base_id=? AND generation_id IS NULL"
         + " AND NOT refresh_required AND NOT EXISTS(SELECT 1 FROM rag_document d"
-        + " WHERE d.knowledge_base_id=q.knowledge_base_id AND NOT d.deleted AND d.pipeline_requested)", kb);
+        + " WHERE d.knowledge_base_id=q.knowledge_base_id AND NOT d.deleted AND d.pipeline_requested"
+        + " AND (q.document_id IS NULL OR d.id=q.document_id))", kb);
   }
 
   /** Stores a sanitized terminal coordination error for explicit user retry. @author czhcc */
@@ -145,6 +162,8 @@ public class DocumentWorkflowService {
     if (jdbc.update("UPDATE rag_document_index_queue SET error_code=? WHERE knowledge_base_id=? AND revision=?"
         + " AND generation_id IS NOT DISTINCT FROM ?", code, kb, revision, generation) != 1) return;
     jdbc.update("UPDATE rag_document SET pipeline_error=? WHERE knowledge_base_id=?"
-        + " AND pipeline_requested AND NOT pipeline_paused AND NOT deleted", code, kb);
+        + " AND pipeline_requested AND NOT pipeline_paused AND NOT deleted AND EXISTS"
+        + " (SELECT 1 FROM rag_document_index_queue q WHERE q.knowledge_base_id=rag_document.knowledge_base_id"
+        + " AND (q.document_id IS NULL OR q.document_id=rag_document.id))", code, kb);
   }
 }

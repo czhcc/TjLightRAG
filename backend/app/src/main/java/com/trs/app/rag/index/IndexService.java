@@ -16,7 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 @RequiredArgsConstructor
 public class IndexService {
-  public static final String PROMPT_VERSION = "lightrag-aaebfe1-text-v1";
+  public static final String PROMPT_VERSION = "trs-typed-entity-json-v5";
   private final JdbcTemplate jdbc;
   private final KnowledgeBaseService access;
   private final ModelConfigurationService models;
@@ -59,7 +59,56 @@ public class IndexService {
     int count = jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE knowledge_base_id=? AND generation_id=?",
         Integer.class, kb, id);
     if (count == 0 || count > 20000) throw new ModelFailure("index_chunk_limit");
+    reuseAutomaticContributions(kb, id);
     return get(kb, id, actor);
+  }
+
+  /** Copies complete compatible contributions, keeping row actions scoped to requested documents. @author czhcc */
+  private void reuseAutomaticContributions(UUID kb, UUID generation) {
+    jdbc.update("""
+        WITH reusable AS MATERIALIZED (
+          SELECT DISTINCT ON (c.chunk_id) c.chunk_id,c.extraction,v.dimensions,v.embedding
+          FROM rag_index_chunk n JOIN rag_index_generation target
+            ON target.knowledge_base_id=n.knowledge_base_id AND target.id=n.generation_id
+          JOIN rag_document_index_queue q ON q.knowledge_base_id=n.knowledge_base_id
+          JOIN rag_index_chunk c ON c.knowledge_base_id=n.knowledge_base_id AND c.chunk_id=n.chunk_id
+            AND c.generation_id<>n.generation_id AND c.completed AND c.extraction IS NOT NULL
+          JOIN rag_index_generation source ON source.knowledge_base_id=c.knowledge_base_id AND source.id=c.generation_id
+          JOIN rag_index_chunk_vector v ON v.knowledge_base_id=c.knowledge_base_id
+            AND v.generation_id=c.generation_id AND v.object_id=c.chunk_id AND v.dimensions=target.dimensions
+          WHERE n.knowledge_base_id=? AND n.generation_id=?
+            AND source.extract_version=target.extract_version AND source.summary_version=target.summary_version
+            AND source.embedding_version=target.embedding_version AND source.dimensions=target.dimensions
+            AND source.prompt_version=target.prompt_version AND source.tokenizer=target.tokenizer
+            AND source.gleaning=target.gleaning
+            AND NOT EXISTS (SELECT 1 FROM rag_index_document i JOIN rag_document d
+              ON d.knowledge_base_id=i.knowledge_base_id AND d.id=i.document_id
+              JOIN rag_document_chunk dc ON dc.knowledge_base_id=i.knowledge_base_id AND dc.revision_id=i.revision_id
+              WHERE i.knowledge_base_id=n.knowledge_base_id AND i.generation_id=n.generation_id
+                AND dc.chunk_id=n.chunk_id AND d.pipeline_requested AND NOT d.pipeline_paused
+                AND (q.document_id IS NULL OR d.id=q.document_id)
+                AND d.pipeline_error IS NULL AND d.pipeline_rebuild AND d.current_revision_id=i.revision_id)
+          ORDER BY c.chunk_id,source.created_at DESC,source.id DESC
+        ), copied AS (
+          UPDATE rag_index_chunk n SET extraction=r.extraction,completed=TRUE FROM reusable r
+          WHERE n.knowledge_base_id=? AND n.generation_id=? AND n.chunk_id=r.chunk_id RETURNING n.chunk_id
+        )
+        INSERT INTO rag_index_chunk_vector(knowledge_base_id,generation_id,object_id,dimensions,embedding)
+        SELECT ?,?,r.chunk_id,r.dimensions,r.embedding FROM reusable r JOIN copied c ON c.chunk_id=r.chunk_id
+        """, kb, generation, kb, generation, kb, generation);
+    // A row action cannot silently re-extract other published documents under changed model versions.
+    if (Boolean.TRUE.equals(jdbc.queryForObject("""
+        SELECT EXISTS (SELECT 1 FROM rag_index_chunk c JOIN rag_document_index_queue q
+          ON q.knowledge_base_id=c.knowledge_base_id WHERE c.knowledge_base_id=? AND c.generation_id=?
+          AND NOT c.completed AND NOT EXISTS (
+            SELECT 1 FROM rag_index_document i JOIN rag_document d
+              ON d.knowledge_base_id=i.knowledge_base_id AND d.id=i.document_id
+            JOIN rag_document_chunk dc ON dc.knowledge_base_id=i.knowledge_base_id AND dc.revision_id=i.revision_id
+            WHERE i.knowledge_base_id=c.knowledge_base_id AND i.generation_id=c.generation_id AND dc.chunk_id=c.chunk_id
+              AND d.pipeline_requested AND NOT d.pipeline_paused AND d.pipeline_error IS NULL
+              AND (q.document_id IS NULL OR d.id=q.document_id)
+              AND d.current_revision_id=i.revision_id))
+        """, Boolean.class, kb, generation))) throw new ModelFailure("index_document_scope_incompatible");
   }
 
   /** Publishes only a complete automatic generation after checking the writer again. @author czhcc */
@@ -369,9 +418,17 @@ public class IndexService {
   }
 
   /**
-   * Atomically saves one contribution and its chunk vector; retries never append weights. @author
-   * agent
+   * Saves incomplete streamed objects without marking a chunk complete or publishing vectors. @author czhcc
    */
+  @Transactional
+  public void extractionProgress(IndexLease l, UUID chunk, Extraction extraction) {
+    lock(l);
+    jdbc.update("UPDATE rag_index_chunk SET extraction=?::JSONB WHERE knowledge_base_id=?"
+        + " AND generation_id=? AND chunk_id=? AND NOT completed", json.writeValueAsString(extraction),
+        l.getKnowledgeBaseId(), l.getId(), chunk);
+  }
+
+  /** Saves a complete contribution and vector only after provider success. @author czhcc */
   @Transactional
   public void checkpoint(IndexLease l, UUID chunk, Extraction extraction, float[] vector) {
     lock(l);
@@ -419,22 +476,23 @@ public class IndexService {
     for (var e : graph.getEntities()) {
       jdbc.update(
           "INSERT INTO"
-              + " rag_index_entity(knowledge_base_id,generation_id,id,name,entity_type,description,source_ids)"
-              + " VALUES (?,?,?,?,?,?,?::JSONB)",
+              + " rag_index_entity(knowledge_base_id,generation_id,id,name,entity_type,description,source_ids,attributes)"
+              + " VALUES (?,?,?,?,?,?,?::JSONB,?::JSONB)",
           l.getKnowledgeBaseId(),
           l.getId(),
           e.getId(),
           e.getName(),
           e.getType(),
           e.getDescription(),
-          json.writeValueAsString(e.getSources()));
+          json.writeValueAsString(e.getSources()),
+          json.writeValueAsString(EntityIdentity.attributes(e.getAttributes())));
       putVector("entity", l, e.getId(), e.getVector());
     }
     for (var r : graph.getRelations()) {
       jdbc.update(
           "INSERT INTO"
-              + " rag_index_relation(knowledge_base_id,generation_id,id,source_id,target_id,description,keywords,weight,source_ids)"
-              + " VALUES (?,?,?,?,?,?,?,?,?::JSONB)",
+              + " rag_index_relation(knowledge_base_id,generation_id,id,source_id,target_id,description,keywords,weight,source_ids,relation_types)"
+              + " VALUES (?,?,?,?,?,?,?,?,?::JSONB,?::JSONB)",
           l.getKnowledgeBaseId(),
           l.getId(),
           r.getId(),
@@ -443,7 +501,8 @@ public class IndexService {
           r.getDescription(),
           r.getKeywords(),
           r.getWeight(),
-          json.writeValueAsString(r.getSources()));
+          json.writeValueAsString(r.getSources()),
+          json.writeValueAsString(r.getTypes()));
       putVector("relation", l, r.getId(), r.getVector());
     }
     integrity(l.getKnowledgeBaseId(), l.getId());
@@ -542,14 +601,14 @@ public class IndexService {
     return Map.of(
         "entities",
         jdbc.queryForList(
-            "SELECT id,name,entity_type,description,source_ids::TEXT FROM rag_index_entity WHERE"
+            "SELECT id,name,entity_type,description,source_ids::TEXT,attributes::TEXT FROM rag_index_entity WHERE"
                 + " knowledge_base_id=? AND generation_id=? ORDER BY name LIMIT 100",
             kb,
             id),
         "relations",
         jdbc.queryForList(
             "SELECT r.id,s.name source,t.name"
-                + " target,r.description,r.keywords,r.weight,r.source_ids::TEXT FROM"
+                + " target,r.description,r.keywords,r.weight,r.source_ids::TEXT,r.relation_types::TEXT FROM"
                 + " rag_index_relation r JOIN rag_index_entity s ON"
                 + " s.knowledge_base_id=r.knowledge_base_id AND s.generation_id=r.generation_id AND"
                 + " s.id=r.source_id JOIN rag_index_entity t ON"

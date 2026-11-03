@@ -111,6 +111,11 @@ class RetrievalIntegrationTest {
               return;
             }
             String response;
+            if (e.getRequestURI().getPath().endsWith("/chat/completions")
+                && body.path("chat_template_kwargs").path("enable_thinking").asBoolean(true)) {
+              e.sendResponseHeaders(400, -1);
+              return;
+            }
             if (e.getRequestURI().getPath().endsWith("/embeddings")) {
               embeddingModels.add(body.path("model").asText());
               List<String> inputs = new ArrayList<>();
@@ -242,6 +247,7 @@ class RetrievalIntegrationTest {
     r.setDimensions(d);
     r.setMaxOutputTokens(1000);
     r.setTimeoutSeconds(5);
+    if (kind.equals("CHAT")) r.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
     return UUID.fromString(models.save(null, r, "admin").get("id").toString());
   }
 
@@ -357,6 +363,27 @@ class RetrievalIntegrationTest {
     r.setTopK(2);
     r.setChunkTopK(2);
     return r;
+  }
+
+  @Test
+  void sameNameDifferentTypesSurviveGraphExpansionAndTypedValuesReachAnswerContext() {
+    UUID gen = seed(3, "");
+    jdbc.update("UPDATE rag_index_entity SET name='长安',entity_type='地',attributes=?::JSONB WHERE generation_id=? AND name='Alice'",
+        "{\"人口\":[{\"type\":\"integer\",\"value\":35}]}", gen);
+    jdbc.update("UPDATE rag_index_entity SET name='长安',entity_type='网' WHERE generation_id=? AND name='LightRAG'", gen);
+    jdbc.update("UPDATE rag_index_relation SET relation_types='[\"位于\"]'::JSONB WHERE generation_id=?", gen);
+    indexes.activate(kb, gen, null, "admin");
+    var request = request("mix"); request.setTopK(3); request.setCosineThreshold(-1);
+    var result = retrieval.query(kb, "admin", request);
+    assertEquals(2, result.getEntities().stream().filter(e -> e.getName().equals("长安")).count());
+    var sameNameEdge = result.getRelations().stream().filter(e -> e.getSource().equals("长安") && e.getTarget().equals("长安")).findFirst().orElseThrow();
+    assertNotEquals(sameNameEdge.getSourceId(), sameNameEdge.getTargetId());
+    assertNotEquals(sameNameEdge.getSourceType(), sameNameEdge.getTargetType());
+    assertTrue(result.getContext().contains("integer"));
+    assertTrue(result.getContext().contains("35"));
+    assertTrue(result.getContext().contains("位于"));
+    assertFalse(result.getReferences().isEmpty());
+    assertTrue(result.getEntities().stream().filter(e -> e.getName().equals("长安")).allMatch(e -> !e.getSourceIds().isEmpty()));
   }
 
   @Test

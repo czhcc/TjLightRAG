@@ -81,24 +81,24 @@ public class IndexProcessor {
                         + headings
                         + "\n\n";
             String user =
-                PromptTemplates.load("extract-user.txt")
+                PromptTemplates.load("extract-json-user.txt")
                     .replace("{heading_context_block}", section)
                     .replace("{input_text}", content);
-            String system = PromptTemplates.load("extract-system.txt");
+            String system = PromptTemplates.load("extract-json-system.txt");
             List<Map<String, String>> messages = new ArrayList<>();
             messages.add(Map.of("role", "system", "content", system));
             messages.add(Map.of("role", "user", "content", user));
-            String first = gateway.chat(extract, messages);
-            result = parser.parse(first);
+            var first = extract(lease, chunk, extract, messages, new Extraction());
+            result = first.finish();
             check.run();
             if (lease.getGleaning() > 0) {
-              messages.add(Map.of("role", "assistant", "content", first));
+              messages.add(Map.of("role", "assistant", "content", json.writeValueAsString(result)));
               messages.add(
                   Map.of(
                       "role",
                       "user",
                       "content",
-                      PromptTemplates.load("glean-user.txt").replace("{input_text}", content)));
+                      PromptTemplates.load("glean-json-user.txt")));
               int budget =
                   messages.stream()
                           .mapToInt(m -> tokenizer.encode(m.get("content")).length + 8)
@@ -106,8 +106,7 @@ public class IndexProcessor {
                       + 16
                       + extract.getMaxOutputTokens();
               if (budget <= extract.getContextTokens()) {
-                var extra = parser.parse(gateway.chat(extract, messages));
-                result = parser.glean(result, extra);
+                result = extract(lease, chunk, extract, messages, result).finish();
               }
             }
             float[] vector = gateway.embed(embedding, content);
@@ -132,5 +131,42 @@ public class IndexProcessor {
         pulse.cancel(false);
       }
     }
+  }
+
+  private JsonExtractionStream extract(IndexLease lease, UUID chunk, ModelVersion model,
+      List<Map<String, String>> messages, Extraction seed) {
+    var stream = extractOnce(lease, chunk, model, messages, seed);
+    if (stream.validationFailure() != null) {
+      var correctionMessages = new ArrayList<>(messages);
+      correctionMessages.add(Map.of("role", "assistant", "content", stream.json()));
+      correctionMessages.add(Map.of("role", "user", "content", PromptTemplates.load("repair-records-json-user.txt")
+          .replace("{validation_code}", stream.validationFailure())));
+      // Replace this invalid round completely; never seed it with that round's partial records.
+      var corrected = extractOnce(lease, chunk, model, correctionMessages, seed);
+      corrected.completeCorrection(corrected.finish());
+      return corrected;
+    }
+    if (stream.hasMissingEndpoints()) {
+      var correctionMessages = new ArrayList<>(messages);
+      correctionMessages.add(Map.of("role", "assistant", "content", stream.json()));
+      correctionMessages.add(Map.of("role", "user", "content", PromptTemplates.load("repair-json-user.txt")));
+      var correction = extractOnce(lease, chunk, model, correctionMessages, stream.finish());
+      correction.completeCorrection(correction.finish());
+      stream.completeCorrection(correction.finish());
+    }
+    return stream;
+  }
+
+  private JsonExtractionStream extractOnce(IndexLease lease, UUID chunk, ModelVersion model,
+      List<Map<String, String>> messages, Extraction seed) {
+    var stream = new JsonExtractionStream(parser, seed, value -> indexes.extractionProgress(lease, chunk, value), true);
+    indexes.extractionProgress(lease, chunk, seed);
+    gateway.streamJson(model, messages, stream::accept, () -> {
+      try { indexes.check(lease); }
+      catch (com.trs.app.rag.RagAccessException revoked) { throw new ModelFailure("index_access_revoked"); }
+    });
+    indexes.check(lease);
+    stream.finishForCorrection();
+    return stream;
   }
 }

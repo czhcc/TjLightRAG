@@ -29,7 +29,7 @@ class ModelTransportTest {
 
   /** Verifies compatibility with providers that reject cleartext HTTP/2 upgrades. @author czhcc */
   @ParameterizedTest
-  @ValueSource(strings = {"CHAT", "EMBEDDING", "RERANK", "STREAM"})
+  @ValueSource(strings = {"CHAT", "EMBEDDING", "RERANK", "STREAM", "JSON_STREAM"})
   void modelCallsUseHttp11WithoutUpgrade(String kind) throws Exception {
     var upgrade = new java.util.concurrent.atomic.AtomicReference<String>();
     var protocol = new java.util.concurrent.atomic.AtomicReference<String>();
@@ -52,7 +52,7 @@ class ModelTransportTest {
                 switch (kind) {
                   case "EMBEDDING" -> "{\"data\":[{\"index\":0,\"embedding\":[1,2,3]}]}";
                   case "RERANK" -> "{\"results\":[{\"index\":0,\"relevance_score\":0.9}]}";
-                  case "STREAM" ->
+                  case "STREAM", "JSON_STREAM" ->
                       "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n"
                           + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
                           + "data: [DONE]\n\n";
@@ -60,8 +60,8 @@ class ModelTransportTest {
                       "{\"choices\":[{\"message\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}";
                 };
             exchange.getResponseHeaders().set(
-                "Content-Type", kind.equals("STREAM") ? "text/event-stream" : "application/json");
-            byte[] bytes = (kind.equals("STREAM") ? OpenAiFixtures.events(response) : OpenAiFixtures.json(response))
+                "Content-Type", kind.endsWith("STREAM") ? "text/event-stream" : "application/json");
+            byte[] bytes = (kind.endsWith("STREAM") ? OpenAiFixtures.events(response) : OpenAiFixtures.json(response))
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
@@ -74,16 +74,24 @@ class ModelTransportTest {
       var tokenizer = mock(RagTokenizer.class);
       when(tokenizer.encode(anyString())).thenReturn(new int[] {1});
       var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), tokenizer);
+      var extras = new LinkedHashMap<String, Object>();
+      if (Set.of("CHAT", "STREAM", "JSON_STREAM").contains(kind)) {
+        extras.put("chat_template_kwargs", Map.of("enable_thinking", false));
+        extras.put("custom_null", null);
+      }
       var version = new ModelVersion(
-          UUID.randomUUID(), UUID.randomUUID(), kind.equals("STREAM") ? "CHAT" : kind,
+          UUID.randomUUID(), UUID.randomUUID(), kind.endsWith("STREAM") ? "CHAT" : kind,
           "http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "test", "",
-          kind.equals("EMBEDDING") ? 3 : 0, 16000, 100, 3);
+          kind.equals("EMBEDDING") ? 3 : 0, 16000, 100, 3,
+          extras);
       switch (kind) {
         case "EMBEDDING" -> assertArrayEquals(new float[] {1, 2, 3}, gateway.embed(version, "test"));
         case "RERANK" -> assertEquals(1, gateway.rerank(version, "test", List.of("test")).size());
-        case "STREAM" -> {
+        case "STREAM", "JSON_STREAM" -> {
           var deltas = new ArrayList<String>();
-          gateway.stream(version, List.of(Map.of("role", "user", "content", "test")), deltas::add);
+          var messages = List.of(Map.of("role", "user", "content", "Return JSON"));
+          if (kind.equals("JSON_STREAM")) gateway.streamJson(version, messages, deltas::add, () -> {});
+          else gateway.stream(version, messages, deltas::add);
           assertEquals("OK", String.join("", deltas));
         }
         default -> assertEquals("OK", gateway.chat(version, List.of(Map.of("role", "user", "content", "test"))));
@@ -93,9 +101,43 @@ class ModelTransportTest {
       assertNull(authorization.get());
       assertEquals("test", tools.jackson.databind.json.JsonMapper.builder().build()
           .readTree(requestBody.get()).path("model").asText());
+      if (Set.of("CHAT", "STREAM", "JSON_STREAM").contains(kind)) {
+        var body = tools.jackson.databind.json.JsonMapper.builder().build().readTree(requestBody.get());
+        if (kind.equals("JSON_STREAM")) assertEquals("json_object", body.path("response_format").path("type").asText());
+        else assertFalse(body.has("response_format"));
+        assertFalse(body.path("chat_template_kwargs").path("enable_thinking").asBoolean(true));
+        assertFalse(body.has("extra_body"));
+        assertTrue(body.has("custom_null") && body.path("custom_null").isNull());
+      }
     } finally {
       server.stop(0);
     }
+  }
+
+  @Test
+  void unsupportedJsonModeFailsWithoutUnconstrainedRetry() throws Exception {
+    var calls = new java.util.concurrent.atomic.AtomicInteger();
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      try {
+        exchange.getRequestBody().readAllBytes();
+        calls.incrementAndGet();
+        exchange.sendResponseHeaders(400, -1);
+      } finally { exchange.close(); }
+    });
+    server.start();
+    try {
+      var tokenizer = mock(RagTokenizer.class);
+      when(tokenizer.encode(anyString())).thenReturn(new int[] {1});
+      var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), tokenizer);
+      var version = new ModelVersion(UUID.randomUUID(), UUID.randomUUID(), "CHAT",
+          "http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "test", "", 0, 16000, 100, 3);
+      var deltas = new ArrayList<String>();
+      assertThrows(ModelFailure.class, () -> gateway.streamJson(version,
+          List.of(Map.of("role", "user", "content", "Return JSON")), deltas::add, () -> {}));
+      assertEquals(1, calls.get());
+      assertTrue(deltas.isEmpty());
+    } finally { server.stop(0); }
   }
 
   @Test

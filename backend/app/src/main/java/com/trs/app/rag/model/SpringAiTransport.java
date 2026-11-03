@@ -22,7 +22,11 @@ final class SpringAiTransport implements com.openai.core.http.HttpClient {
   private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
 
   SpringAiTransport(int seconds, boolean noAuth) {
-    this.client = SHARED.newBuilder().callTimeout(Duration.ofSeconds(seconds))
+    this(seconds, noAuth, false);
+  }
+
+  SpringAiTransport(int seconds, boolean noAuth, boolean streaming) {
+    this.client = SHARED.newBuilder().callTimeout(streaming ? Duration.ZERO : Duration.ofSeconds(seconds))
         .connectTimeout(Duration.ofSeconds(Math.min(10, seconds)))
         .readTimeout(Duration.ofSeconds(seconds)).build();
     this.noAuth = noAuth;

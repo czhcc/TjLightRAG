@@ -1,0 +1,6 @@
+抽取下方原文中的实体、属性及关系，严格按系统定义的 JSON 格式输出，entities 在前、relations 在后。章节路径仅用于理解上下文，不能单独作为事实来源。
+
+{heading_context_block}---Input Text---
+```
+{input_text}
+```

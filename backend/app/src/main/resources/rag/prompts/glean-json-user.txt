@@ -1,0 +1,1 @@
+检查上次抽取是否遗漏或需要纠正，仅补充原文有证据的实体、属性和关系。保持相同 JSON 格式，先 entities、后 relations。正确记录不必重复；实体按名称+类型合并，补充属性保留其 name/type/value。关系端点必须带 name 和 type，可以引用上次成功输出的实体。没有补充时返回 {"entities":[],"relations":[]}。

@@ -13,11 +13,11 @@ public final class RetrievalPrompts {
 
   private RetrievalPrompts() {}
 
-  /** Loads the exact upstream template bytes, preserving serialized-budget parity. @author agent */
+  /** Loads upstream templates with canonical LF line endings for budget parity across platforms. @author czhcc */
   public static String load(String name) {
     try (var in = RetrievalPrompts.class.getResourceAsStream("/rag/retrieval/" + name)) {
       if (in == null) throw new IllegalStateException("Missing retrieval prompt");
-      return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+      return new String(in.readAllBytes(), StandardCharsets.UTF_8).replace("\r\n", "\n");
     } catch (java.io.IOException error) {
       throw new IllegalStateException("Cannot load retrieval prompt");
     }

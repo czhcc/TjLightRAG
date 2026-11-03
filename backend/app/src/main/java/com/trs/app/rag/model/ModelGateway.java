@@ -43,11 +43,25 @@ public class ModelGateway {
   }
 
   private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk) {
-    return OpenAiChatModel.builder().openAiClient(sdk).openAiClientAsync(sdk.async())
-        .options(OpenAiChatOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
+    return chatModel(version, sdk, false);
+  }
+
+  private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk, boolean jsonObject) {
+    var options = OpenAiChatOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
             .model(version.getModel()).maxTokens(version.getMaxOutputTokens()).temperature(0.0)
-            .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).build())
-        .build();
+            .extraBody(extraBody(version))
+            .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0);
+    if (jsonObject) options.responseFormat(OpenAiChatModel.ResponseFormat.builder()
+        .type(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT).build());
+    return OpenAiChatModel.builder().openAiClient(sdk).openAiClientAsync(sdk.async())
+        .options(options.build()).build();
+  }
+
+  private Map<String, Object> extraBody(ModelVersion version) {
+    var parameters = new LinkedHashMap<>(version.getExtraBody());
+    // Spring AI copies the outer map with Map.copyOf, which rejects Java null values.
+    parameters.replaceAll((key, value) -> value == null ? com.openai.core.JsonValue.from((Object) null) : value);
+    return parameters;
   }
 
   /** Uses the official client's streaming implementation. @author czhcc */
@@ -111,13 +125,31 @@ public class ModelGateway {
   /** Propagates provider deltas and rejects incomplete, failed or cancelled streams. @author czhcc */
   public void stream(ModelVersion version, List<Map<String, String>> messages,
       java.util.function.Consumer<String> delta) {
+    stream(version, messages, delta, () -> {});
+  }
+
+  /** Checks cancellation and lease validity even while the provider is idle. @author czhcc */
+  public void stream(ModelVersion version, List<Map<String, String>> messages,
+      java.util.function.Consumer<String> delta, Runnable check) {
+    stream(version, messages, delta, check, false);
+  }
+
+  /** Requests JSON object output for extraction while preserving streaming and lease checks. @author czhcc */
+  public void streamJson(ModelVersion version, List<Map<String, String>> messages,
+      java.util.function.Consumer<String> delta, Runnable check) {
+    stream(version, messages, delta, check, true);
+  }
+
+  private void stream(ModelVersion version, List<Map<String, String>> messages,
+      java.util.function.Consumer<String> delta, Runnable check, boolean jsonObject) {
+    check.run();
     Prompt prompt = prompt(version, messages);
     guarded(() -> {
       var stopped = new java.util.concurrent.atomic.AtomicBoolean();
       var content = new java.util.concurrent.atomic.AtomicBoolean();
       try (var transport = new SpringAiTransport(version.getTimeoutSeconds(),
-          vault.decrypt(version.getCipher(), version.getProfileId()).isEmpty())) {
-      chatModel(version, sdkClient(version, transport)).stream(prompt)
+          vault.decrypt(version.getCipher(), version.getProfileId()).isEmpty(), true)) {
+      chatModel(version, sdkClient(version, transport), jsonObject).stream(prompt)
           .doOnNext(response -> {
             if (response.getResults().isEmpty()) return;
             if (response.getResults().size() != 1) throw new ModelFailure("model_stream_invalid");
@@ -136,6 +168,7 @@ public class ModelGateway {
           .concatWith(Flux.defer(() -> stopped.get() && content.get() ? Flux.empty()
               : Flux.error(new ModelFailure("model_stream_incomplete"))))
           .doOnCancel(transport::close)
+          .takeUntilOther(Flux.interval(Duration.ofSeconds(1)).doOnNext(ignored -> check.run()).then())
           .timeout(Duration.ofSeconds(version.getTimeoutSeconds()), Flux.error(new ModelFailure("model_timeout")))
           .doFinally(signal -> transport.close())
           .blockLast();

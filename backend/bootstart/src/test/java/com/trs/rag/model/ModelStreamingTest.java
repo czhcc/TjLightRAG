@@ -16,6 +16,38 @@ import org.junit.jupiter.api.Test;
 /** Real provider HTTP streams, not buffered-answer simulations. @author agent */
 class ModelStreamingTest {
   @Test
+  void activeStreamMayExceedConfiguredIdleTimeout() throws Exception {
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    var executor = Executors.newVirtualThreadPerTaskExecutor();
+    server.setExecutor(executor);
+    server.createContext("/v1/chat/completions", e -> {
+      try {
+        e.getRequestBody().readAllBytes();
+        e.getResponseHeaders().set("Content-Type", "text/event-stream");
+        e.sendResponseHeaders(200, 0);
+        for (int i = 0; i < 6; i++) {
+          e.getResponseBody().write(OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{\"content\":\"片段\"},\"finish_reason\":null}]}\n\n").getBytes(StandardCharsets.UTF_8));
+          e.getResponseBody().flush();
+          Thread.sleep(500);
+        }
+        e.getResponseBody().write(OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8));
+      } catch (Exception ignored) {
+      } finally { e.close(); }
+    });
+    server.start();
+    try {
+      var t = mock(RagTokenizer.class);
+      when(t.encode(anyString())).thenReturn(new int[] {1});
+      var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), t);
+      var version = new ModelVersion(UUID.randomUUID(), UUID.randomUUID(), "CHAT",
+          "http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "test", "", 0, 16000, 100, 2);
+      List<String> received = new ArrayList<>();
+      gateway.stream(version, List.of(Map.of("role", "user", "content", "test")), received::add);
+      assertEquals(6, received.size());
+    } finally { server.stop(0); executor.shutdownNow(); }
+  }
+
+  @Test
   void finishReasonAndProviderDoneAreBothRequired() throws Exception {
     var payload = new java.util.concurrent.atomic.AtomicReference<String>();
     var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

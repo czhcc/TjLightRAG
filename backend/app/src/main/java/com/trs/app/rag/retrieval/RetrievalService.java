@@ -322,7 +322,8 @@ public class RetrievalService {
         version.getDimensions(),
         version.getContextTokens(),
         version.getMaxOutputTokens(),
-        Math.min(version.getTimeoutSeconds(), seconds));
+        Math.min(version.getTimeoutSeconds(), seconds),
+        version.getExtraBody());
   }
 
   /**

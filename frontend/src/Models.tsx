@@ -14,6 +14,7 @@ type Model = {
   contextTokens: number;
   maxOutputTokens: number;
   timeoutSeconds: number;
+  extraBody?: Record<string, unknown>;
 };
 const defaults = {
   name: "",
@@ -26,6 +27,7 @@ const defaults = {
   contextTokens: 16000,
   maxOutputTokens: 2000,
   timeoutSeconds: 30,
+  extraBody: "",
 };
 const roles = [
   "extract",
@@ -67,6 +69,15 @@ export default function Models({
           : "models.failure",
       ),
     );
+  }
+  let extraBody: Record<string, unknown> = {};
+  let extraBodyValid = true;
+  if (form.kind === "CHAT" && form.extraBody.trim()) {
+    try {
+      const value: unknown = JSON.parse(form.extraBody);
+      if (!value || typeof value !== "object" || Array.isArray(value) || new Blob([form.extraBody]).size > 16384) extraBodyValid = false;
+      else extraBody = value as Record<string, unknown>;
+    } catch { extraBodyValid = false; }
   }
   async function load() {
     try {
@@ -110,10 +121,11 @@ export default function Models({
   }, []);
   async function save(e: FormEvent) {
     e.preventDefault();
+    if (!extraBodyValid) return;
     setBusy(true);
     setError("");
     setNotice("");
-    const body = { ...form };
+    const body = { ...form, extraBody };
     setForm((f) => ({ ...f, apiKey: "" }));
     try {
       await mutate(
@@ -186,6 +198,7 @@ export default function Models({
       contextTokens: m.contextTokens,
       maxOutputTokens: m.maxOutputTokens,
       timeoutSeconds: m.timeoutSeconds,
+      extraBody: JSON.stringify(m.extraBody ?? {}, null, 2),
     });
     setNotice("");
   }
@@ -324,6 +337,16 @@ export default function Models({
                 />
               </label>
             ))}
+            {form.kind === "CHAT" && <div className="space-y-2 md:col-span-2">
+              <label htmlFor="model-extra-body">{t("models.extraBody")}</label>
+              <textarea id="model-extra-body" rows={6} maxLength={16384} disabled={busy}
+                className="font-mono text-sm" spellCheck={false} value={form.extraBody}
+                aria-invalid={!extraBodyValid} aria-describedby="model-extra-body-hint"
+                placeholder={'{\n  "chat_template_kwargs": {\n    "enable_thinking": false\n  }\n}'}
+                onChange={e => setForm({ ...form, extraBody: e.target.value })} />
+              <p id="model-extra-body-hint" className="text-sm text-slate-500">{t("models.extraBodyHint")}</p>
+              {!extraBodyValid && <p role="alert" className="text-sm text-red-700">{t("models.extraBodyInvalid")}</p>}
+            </div>}
             {profile && (
               <label className="flex items-center gap-2">
                 <input
@@ -338,7 +361,7 @@ export default function Models({
             )}
             <div className="flex items-end gap-3">
               <button
-                disabled={busy || form.maxOutputTokens >= form.contextTokens}
+                disabled={busy || !extraBodyValid || form.maxOutputTokens >= form.contextTokens}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40"
               >
                 {t("models.save")}

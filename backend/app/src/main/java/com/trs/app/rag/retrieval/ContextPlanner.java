@@ -34,16 +34,11 @@ public class ContextPlanner {
     return String.join(
         "\n",
         nodes.stream()
-            .map(
-                n ->
-                    PythonJson.render(
-                        object(
-                            "entity",
-                            n.getName(),
-                            "type",
-                            n.getType(),
-                            "description",
-                            n.getDescription())))
+            .map(n -> {
+              var row = object("entity", n.getName(), "type", n.getType(), "description", n.getDescription());
+              if (!n.getAttributes().isEmpty()) row.put("attributes", com.trs.app.rag.index.EntityIdentity.attributes(n.getAttributes()));
+              return PythonJson.render(row);
+            })
             .toList());
   }
 
@@ -51,16 +46,15 @@ public class ContextPlanner {
     return String.join(
         "\n",
         edges.stream()
-            .map(
-                e ->
-                    PythonJson.render(
-                        object(
-                            "entity1",
-                            e.getSource(),
-                            "entity2",
-                            e.getTarget(),
-                            "description",
-                            e.getDescription())))
+            .map(e -> {
+              var row = object("entity1", e.getSource(), "entity2", e.getTarget(), "description", e.getDescription());
+              if (!e.getSourceType().isBlank()) {
+                row.put("entity1_type", e.getSourceType()); row.put("entity2_type", e.getTargetType());
+                row.put("entity1_id", e.getSourceId()); row.put("entity2_id", e.getTargetId());
+              }
+              if (!e.getTypes().isEmpty()) row.put("relation_types", e.getTypes());
+              return PythonJson.render(row);
+            })
             .toList());
   }
 

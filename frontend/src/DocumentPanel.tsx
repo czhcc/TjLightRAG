@@ -118,9 +118,11 @@ export default function DocumentPanel({ kb, canWrite, onSessionExpired }: {
     finally { if (!controller.signal.aborted) setBusy(false); }
   }
   function choose(files: FileList | null) {
+    // Snapshot the live FileList before the input reset clears it.
+    const selectedFiles = Array.from(files ?? []);
     setUploads(current => {
       const result = [...current];
-      for (const file of Array.from(files ?? [])) {
+      for (const file of selectedFiles) {
         const name = file.webkitRelativePath || file.name;
         if (!result.some(item => item.name === name)) result.push({ file, name, state: "pending" });
       }

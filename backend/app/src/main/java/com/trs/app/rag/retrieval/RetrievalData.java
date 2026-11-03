@@ -20,21 +20,37 @@ public final class RetrievalData {
 
   /** Graph entity in recall order, with its complete contribution IDs. @author agent */
   @Value
+  @lombok.AllArgsConstructor
   public static class Node {
     String id, name, type, description;
     List<String> sourceIds;
     int degree;
     Double score;
+    List<com.trs.app.rag.index.Extraction.Attribute> attributes;
+
+    /** Retains compatibility with query-local legacy fixtures and clients. @author czhcc */
+    public Node(String id, String name, String type, String description, List<String> sourceIds, int degree, Double score) {
+      this(id, name, type, description, sourceIds, degree, score, List.of());
+    }
   }
 
   /** Canonical name-ordered undirected edge. @author agent */
   @Value
+  @lombok.AllArgsConstructor
   public static class Edge {
     String id, source, target, description, keywords;
     double weight;
     List<String> sourceIds;
     int rank;
     Double score;
+    String sourceId, targetId, sourceType, targetType;
+    List<String> types;
+
+    /** Supports historical name-only test projections without changing production ID lookups. @author czhcc */
+    public Edge(String id, String source, String target, String description, String keywords, double weight,
+        List<String> sourceIds, int rank, Double score) {
+      this(id, source, target, description, keywords, weight, sourceIds, rank, score, source, target, "", "", List.of());
+    }
   }
 
   /** One immutable revision-specific occurrence of a shared chunk. @author agent */
