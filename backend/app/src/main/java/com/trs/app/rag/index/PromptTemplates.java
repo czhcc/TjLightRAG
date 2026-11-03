@@ -11,7 +11,7 @@ public final class PromptTemplates {
   public static String load(String name) {
     try (var in = PromptTemplates.class.getResourceAsStream("/rag/prompts/" + name)) {
       if (in == null) throw new IllegalStateException("Missing pinned prompt");
-      return new String(in.readAllBytes(), StandardCharsets.UTF_8).strip();
+      return new String(in.readAllBytes(), StandardCharsets.UTF_8).replace("\r\n", "\n").strip();
     } catch (java.io.IOException e) {
       throw new IllegalStateException("Cannot load pinned prompt");
     }

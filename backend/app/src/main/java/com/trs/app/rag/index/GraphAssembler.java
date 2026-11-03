@@ -31,6 +31,7 @@ public class GraphAssembler {
     private String name, type, description;
     private List<UUID> sources;
     private float[] vector;
+    private List<Extraction.Attribute> attributes = new ArrayList<>();
   }
 
   /** Merged undirected edge with one weight contribution per shared chunk. @author agent */
@@ -42,18 +43,21 @@ public class GraphAssembler {
     private double weight;
     private List<UUID> sources;
     private float[] vector;
+    private List<String> types = new ArrayList<>();
   }
 
   private static class NodeParts {
-    final Map<String, Integer> types = new TreeMap<>();
+    String name, type;
     final LinkedHashSet<String> descriptions = new LinkedHashSet<>();
     final Set<UUID> sources = new LinkedHashSet<>();
+    List<Extraction.Attribute> attributes = new ArrayList<>();
   }
 
   private static class EdgeParts {
     final LinkedHashSet<String> descriptions = new LinkedHashSet<>(),
         keywords = new LinkedHashSet<>();
     final Set<UUID> sources = new LinkedHashSet<>();
+    final Set<String> types = new TreeSet<>();
   }
 
   /**
@@ -70,19 +74,28 @@ public class GraphAssembler {
     for (var chunk : contributions.entrySet()) {
       check.run();
       for (var e : chunk.getValue().getEntities()) {
-        var n = nodes.computeIfAbsent(e.getName(), k -> new NodeParts());
-        n.types.merge(e.getType(), 1, Integer::sum);
-        n.descriptions.add(e.getDescription());
+        var n = nodes.computeIfAbsent(EntityIdentity.key(e.getName(), e.getType()), k -> new NodeParts());
+        n.name = e.getName(); n.type = e.getType();
+        n.descriptions.add(e.getDescription() + (e.getAttributes().isEmpty() ? ""
+            : "\n实体属性: " + json.writeValueAsString(e.getAttributes())));
+        n.attributes = EntityIdentity.merge(n.attributes, e.getAttributes());
+        if (n.attributes.size() > 8192 || n.attributes.stream().map(Extraction.Attribute::getName).distinct().count() > 128)
+          throw new ModelFailure("graph_size_limit");
         n.sources.add(chunk.getKey());
       }
       for (var r : chunk.getValue().getRelations()) {
+        String source = endpoint(nodes, r.getSource(), r.getSourceType());
+        String target = endpoint(nodes, r.getTarget(), r.getTargetType());
+        if (source.equals(target)) throw new ModelFailure("extraction_self_relation");
+        List<String> endpoints = source.compareTo(target) <= 0 ? List.of(source, target) : List.of(target, source);
         var edge =
-            edges.computeIfAbsent(List.of(r.getSource(), r.getTarget()), k -> new EdgeParts());
+            edges.computeIfAbsent(endpoints, k -> new EdgeParts());
         edge.descriptions.add(r.getDescription());
+        if (!r.getType().isBlank()) { edge.types.add(r.getType()); edge.keywords.add(r.getType()); }
         for (String k : r.getKeywords().split(",")) if (!k.isBlank()) edge.keywords.add(k.strip());
         edge.sources.add(chunk.getKey());
-        for (String name : List.of(r.getSource(), r.getTarget())) {
-          var n = nodes.computeIfAbsent(name, k -> new NodeParts());
+        for (String key : endpoints) {
+          var n = nodes.get(key);
           n.sources.add(chunk.getKey());
         }
       }
@@ -93,26 +106,19 @@ public class GraphAssembler {
     for (var e : nodes.entrySet()) {
       check.run();
       Node n = new Node();
-      n.setId(UUID.nameUUIDFromBytes(e.getKey().getBytes(StandardCharsets.UTF_8)));
+      n.setId(EntityIdentity.id(e.getValue().name, e.getValue().type));
       ids.put(e.getKey(), n.getId());
-      n.setName(e.getKey());
-      n.setType(
-          e.getValue().types.entrySet().stream()
-              .sorted(
-                  Comparator.<Map.Entry<String, Integer>>comparingInt(Map.Entry::getValue)
-                      .reversed()
-                      .thenComparing(Map.Entry::getKey))
-              .map(Map.Entry::getKey)
-              .findFirst()
-              .orElse("unknown"));
+      n.setName(e.getValue().name);
+      n.setType(e.getValue().type);
       var desc = e.getValue().descriptions;
       if (desc.isEmpty()) {
         for (var edge : edges.entrySet())
           if (edge.getKey().contains(e.getKey())) desc.addAll(edge.getValue().descriptions);
       }
-      n.setDescription(describe("entity", e.getKey(), new ArrayList<>(desc), summary, check));
+      n.setDescription(describe("entity", n.getName() + " (" + n.getType() + ")", new ArrayList<>(desc), summary, check));
       n.setSources(new ArrayList<>(e.getValue().sources));
-      n.setVector(gateway.embed(embedding, n.getName() + "\n" + n.getDescription()));
+      n.setAttributes(e.getValue().attributes);
+      n.setVector(gateway.embed(embedding, n.getName() + "\n" + n.getType() + "\n" + n.getDescription()));
       check.run();
       resultNodes.add(n);
     }
@@ -133,20 +139,37 @@ public class GraphAssembler {
       r.setDescription(
           describe(
               "relationship",
-              src + "~" + tgt,
+              nodes.get(src).name + " (" + nodes.get(src).type + ")~" + nodes.get(tgt).name + " (" + nodes.get(tgt).type + ")",
               new ArrayList<>(e.getValue().descriptions),
               summary,
               check));
       r.setKeywords(String.join(",", e.getValue().keywords.stream().sorted().toList()));
+      r.setTypes(new ArrayList<>(e.getValue().types));
       r.setSources(new ArrayList<>(e.getValue().sources));
       r.setWeight(r.getSources().size());
       r.setVector(
           gateway.embed(
-              embedding, r.getKeywords() + "\t" + src + "\n" + tgt + "\n" + r.getDescription()));
+              embedding, r.getKeywords() + "\t" + nodes.get(src).name + " (" + nodes.get(src).type + ")\n"
+                  + nodes.get(tgt).name + " (" + nodes.get(tgt).type + ")\n" + r.getDescription()));
       check.run();
       resultEdges.add(r);
     }
     return new Graph(resultNodes, resultEdges);
+  }
+
+  private String endpoint(Map<String, NodeParts> nodes, String name, String type) {
+    if (!type.isBlank()) {
+      String key = EntityIdentity.key(name, type);
+      if (!nodes.containsKey(key)) throw new ModelFailure("extraction_missing_endpoint");
+      return key;
+    }
+    var matches = nodes.entrySet().stream().filter(e -> e.getValue().name.equals(name)).map(Map.Entry::getKey).toList();
+    if (matches.size() > 1) throw new ModelFailure("extraction_ambiguous_endpoint");
+    if (matches.size() == 1) return matches.getFirst();
+    // Compatibility for legacy delimiter-based contributions; new JSON extraction resolves typed endpoints first.
+    String key = EntityIdentity.key(name, "unknown");
+    var node = new NodeParts(); node.name = name; node.type = "unknown"; nodes.put(key, node);
+    return key;
   }
 
   /**

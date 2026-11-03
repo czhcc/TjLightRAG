@@ -1,0 +1,3 @@
+本轮记录未通过校验，错误码：{validation_code}。仅根据原始 Input Text 纠正一次，重新输出本轮完整结果，替换紧邻的上次回复而不是只输出修改片段。保留本轮所有正确且有原文证据的实体、属性和关系；更早的成功抽取仍有效。
+实体必须有非空 name/type/description；五要素优先但允许其他准确类型。attributes 为 name/type/value 对象数组，没有属性返回 []。实体按名称+类型识别，关系 source/target 都必须携带准确的 name 和 type，不得引用含糊或不存在的身份，不得是同一实体自身。type/keywords/description 为非空字符串。不能为通过校验编造名称或事实；无依据的记录不输出。
+仅输出 entities、relations 两个数组构成的严格 JSON 对象，实体在前，关系在后。遵守系统提示中的数量、大小和安全限制，没有内容时返回 {"entities":[],"relations":[]}。

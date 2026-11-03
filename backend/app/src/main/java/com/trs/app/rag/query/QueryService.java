@@ -334,6 +334,7 @@ public class QueryService {
         v.getDimensions(),
         v.getContextTokens(),
         v.getMaxOutputTokens(),
-        Math.min(seconds, v.getTimeoutSeconds()));
+        Math.min(seconds, v.getTimeoutSeconds()),
+        v.getExtraBody());
   }
 }

@@ -24,13 +24,16 @@ type Result = {
   mode: string;
   generationId: string;
   embeddingVersion: string;
-  entities: { id: string; name: string; type: string; description: string }[];
+  entities: { id: string; name: string; type: string; description: string; attributes?: {name: string; type: string; value: unknown}[] }[];
   relations: {
     id: string;
     source: string;
     target: string;
     description: string;
     weight: number;
+    sourceType?: string;
+    targetType?: string;
+    types?: string[];
   }[];
   chunks: Chunk[];
   references: { reference_id: string; file_path: string }[];
@@ -376,6 +379,7 @@ export default function RetrievalPanel({
                     <strong>{e.name}</strong> · {e.type}
                     <br />
                     {e.description}
+                    {(e.attributes ?? []).map((a, index) => <span key={index} className="block text-slate-600">{a.name}（{a.type}）：{typeof a.value === "string" ? a.value : JSON.stringify(a.value)}</span>)}
                   </p>
                 ))}
               </div>
@@ -383,9 +387,10 @@ export default function RetrievalPanel({
                 {result.relations.map((r) => (
                   <p key={r.id} className="my-3 text-sm">
                     <strong>
-                      {r.source} ↔ {r.target}
+                      {r.source}{r.sourceType ? `（${r.sourceType}）` : ""} ↔ {r.target}{r.targetType ? `（${r.targetType}）` : ""}
                     </strong>{" "}
                     · {r.weight}
+                    {(r.types ?? []).length > 0 && <> · {r.types!.join("、")}</>}
                     <br />
                     {r.description}
                   </p>

@@ -106,17 +106,21 @@ public class ExtractionParser {
    */
   public Extraction glean(Extraction original, Extraction additional) {
     Map<String, Extraction.Entity> entities = new LinkedHashMap<>();
-    for (var e : original.getEntities()) entities.put(e.getName(), e);
+    for (var e : original.getEntities()) entities.put(EntityIdentity.key(e.getName(), e.getType()), e);
     for (var e : additional.getEntities())
       entities.merge(
-          e.getName(),
+          EntityIdentity.key(e.getName(), e.getType()),
           e,
-          (a, b) -> b.getDescription().length() > a.getDescription().length() ? b : a);
+          (a, b) -> {
+            var attributes = EntityIdentity.merge(a.getAttributes(), b.getAttributes());
+            var selected = b.getDescription().length() > a.getDescription().length() ? b : a;
+            return new Extraction.Entity(selected.getName(), selected.getType(), selected.getDescription(), attributes);
+          });
     Map<List<String>, Extraction.Relation> relations = new LinkedHashMap<>();
-    for (var r : original.getRelations()) relations.put(List.of(r.getSource(), r.getTarget()), r);
+    for (var r : original.getRelations()) relations.put(List.of(r.getSource(), r.getSourceType(), r.getTarget(), r.getTargetType(), r.getType()), r);
     for (var r : additional.getRelations())
       relations.merge(
-          List.of(r.getSource(), r.getTarget()),
+          List.of(r.getSource(), r.getSourceType(), r.getTarget(), r.getTargetType(), r.getType()),
           r,
           (a, b) -> b.getDescription().length() > a.getDescription().length() ? b : a);
     return new Extraction(new ArrayList<>(entities.values()), new ArrayList<>(relations.values()));

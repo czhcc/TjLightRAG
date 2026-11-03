@@ -15,6 +15,7 @@ public class ModelConfigurationService {
   private final SecretVault vault;
   private final EndpointPolicy policy;
   private final ModelGateway gateway;
+  private final tools.jackson.databind.json.JsonMapper json = tools.jackson.databind.json.JsonMapper.builder().build();
   public static final Set<String> ROLES =
       Set.of("extract", "summary", "keywords", "answer", "embedding", "rerank");
 
@@ -60,6 +61,7 @@ public class ModelConfigurationService {
     m.put("contextTokens", rs.getInt("context_tokens"));
     m.put("maxOutputTokens", rs.getInt("max_output_tokens"));
     m.put("timeoutSeconds", rs.getInt("timeout_seconds"));
+    m.put("extraBody", ModelExtraParameters.read(rs.getString("extra_body")));
     return m;
   }
 
@@ -102,8 +104,8 @@ public class ModelConfigurationService {
     String url = r.getBaseUrl().replaceAll("/+$", "");
     jdbc.update(
         "INSERT INTO"
-            + " rag_model_version(id,profile_id,version,base_url,model,secret_cipher,dimensions,context_tokens,max_output_tokens,timeout_seconds)"
-            + " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            + " rag_model_version(id,profile_id,version,base_url,model,secret_cipher,dimensions,context_tokens,max_output_tokens,timeout_seconds,extra_body)"
+            + " VALUES (?,?,?,?,?,?,?,?,?,?,?::JSONB)",
         id,
         profile,
         version,
@@ -113,7 +115,8 @@ public class ModelConfigurationService {
         r.getDimensions(),
         r.getContextTokens(),
         r.getMaxOutputTokens(),
-        r.getTimeoutSeconds());
+        r.getTimeoutSeconds(),
+        json.writeValueAsString(ModelExtraParameters.copy(r.getExtraBody())));
     return history(profile, actor).getFirst();
   }
 
@@ -140,6 +143,9 @@ public class ModelConfigurationService {
         || r.getTimeoutSeconds() < 1
         || r.getTimeoutSeconds() > 120)
       throw new IllegalArgumentException("Invalid model configuration");
+    var extra = ModelExtraParameters.copy(r.getExtraBody());
+    if (!"CHAT".equals(r.getKind()) && !extra.isEmpty())
+      throw new IllegalArgumentException("Extensions require a text model");
   }
 
   /** Deletes a historical version after removing unused terminal indexes atomically. @author czhcc */
@@ -209,7 +215,8 @@ public class ModelConfigurationService {
                     rs.getInt("dimensions"),
                     rs.getInt("context_tokens"),
                     rs.getInt("max_output_tokens"),
-                    rs.getInt("timeout_seconds")),
+                    rs.getInt("timeout_seconds"),
+                    ModelExtraParameters.read(rs.getString("extra_body"))),
             id);
     if (rows.isEmpty()) throw new RagAccessException(404);
     return rows.getFirst();

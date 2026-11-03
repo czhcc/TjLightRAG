@@ -70,6 +70,16 @@ class ModelIndexIntegrationTest {
   AtomicInteger embeddingCalls = new AtomicInteger();
   AtomicBoolean failEmbedding = new AtomicBoolean();
   AtomicInteger failAt = new AtomicInteger(-1);
+  AtomicReference<tools.jackson.databind.JsonNode> lastChatRequest = new AtomicReference<>();
+  AtomicBoolean holdExtraction = new AtomicBoolean(), truncateExtraction = new AtomicBoolean();
+  AtomicBoolean orphanRelations = new AtomicBoolean(), repairEndpoints = new AtomicBoolean();
+  AtomicBoolean omitAttributes = new AtomicBoolean();
+  AtomicBoolean typedEntities = new AtomicBoolean();
+  AtomicInteger invalidEntityAt = new AtomicInteger(-1);
+  AtomicBoolean repeatInvalidEntity = new AtomicBoolean();
+  AtomicBoolean truncateCorrection = new AtomicBoolean();
+  AtomicInteger extractionCalls = new AtomicInteger();
+  CountDownLatch extractionSent = new CountDownLatch(1), extractionRelease = new CountDownLatch(1);
   final JsonMapper json = JsonMapper.builder().build();
 
   @BeforeEach
@@ -84,6 +94,7 @@ class ModelIndexIntegrationTest {
                 json.readTree(
                     new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             String path = ex.getRequestURI().getPath();
+            if (path.endsWith("chat/completions")) lastChatRequest.set(body);
             String response;
             assertEquals(
                 "Bearer test-private-key", ex.getRequestHeaders().getFirst("Authorization"));
@@ -120,7 +131,52 @@ class ModelIndexIntegrationTest {
                           Map.of("prompt_tokens", 1, "total_tokens", 1)));
             } else if (path.endsWith("rerank"))
               response = "{\"results\":[{\"index\":0,\"relevance_score\":0.9}]}";
-            else {
+            else if (body.path("stream").asBoolean()) {
+              int extractionCall = extractionCalls.incrementAndGet();
+              if (!"json_object".equals(body.path("response_format").path("type").asText())) {
+                ex.sendResponseHeaders(400, -1);
+                return;
+              }
+              ex.getResponseHeaders().set("Content-Type", "text/event-stream");
+              ex.sendResponseHeaders(200, 0);
+              String first = "{\"entities\":[{\"name\":\"Alice\",\"type\":\"人\",\"description\":\"Researcher\",\"attributes\":{\"职业\":\"研究员\"}}";
+              String rest = ",{\"name\":\"Bob\",\"type\":\"人\",\"description\":\"Scientist\",\"attributes\":{}}],\"relations\":[{\"source\":\"Alice\",\"target\":\"Bob\",\"type\":\"合作\",\"keywords\":\"research\",\"description\":\"Collaborate\"}]}";
+              if (orphanRelations.get()) {
+                if (extractionCall == 1) {
+                  rest = "],\"relations\":[{\"source\":\"Alice\",\"target\":\"Bob\",\"type\":\"合作\",\"keywords\":\"research\",\"description\":\"Collaborate\"}]}";
+                } else {
+                  first = repairEndpoints.get()
+                      ? "{\"entities\":[{\"name\":\"Bob\",\"type\":\"人\",\"description\":\"Scientist\",\"attributes\":{}}"
+                      : "{\"entities\":[";
+                  rest = repairEndpoints.get() ? "],\"relations\":[]}"
+                      : "],\"relations\":[{\"source\":\"Alice\",\"target\":\"Bob\",\"type\":\"合作\",\"keywords\":\"research\",\"description\":\"Collaborate\"}]}";
+                }
+              }
+              if (omitAttributes.get()) {
+                first = first.replace(",\"attributes\":{\"职业\":\"研究员\"}", "");
+                rest = rest.replace(",\"attributes\":{}", "");
+              }
+              if (typedEntities.get()) {
+                first = "{\"entities\":[{\"name\":\"长安\",\"type\":\"地\",\"description\":\"城市\",\"attributes\":[{\"name\":\"人口\",\"type\":\"integer\",\"value\":35}]}";
+                rest = ",{\"name\":\"长安\",\"type\":\"网\",\"description\":\"企业\",\"attributes\":[]}],\"relations\":[{\"source\":{\"name\":\"长安\",\"type\":\"网\"},\"target\":{\"name\":\"长安\",\"type\":\"地\"},\"type\":\"位于\",\"keywords\":\"城市,企业\",\"description\":\"企业位于城市\"}]}";
+              }
+              if (extractionCall == invalidEntityAt.get()
+                  || repeatInvalidEntity.get() && extractionCall >= invalidEntityAt.get())
+                first = first.replace("\"name\":\"Alice\",", "");
+              for (String piece : List.of(first, rest)) {
+                String event = "data: " + json.writeValueAsString(Map.of("choices", List.of(Map.of("delta", Map.of("content", piece))))) + "\n\n";
+                ex.getResponseBody().write(com.trs.rag.model.OpenAiFixtures.events(event).getBytes(StandardCharsets.UTF_8));
+                ex.getResponseBody().flush();
+                if (piece.equals(first)) {
+                  extractionSent.countDown();
+                  if (holdExtraction.get()) extractionRelease.await(15, TimeUnit.SECONDS);
+                }
+              }
+              if (!truncateExtraction.get() && !(truncateCorrection.get() && extractionCall > 1)) ex.getResponseBody().write(com.trs.rag.model.OpenAiFixtures.events(
+                  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8));
+              ex.close();
+              return;
+            } else {
               String answer =
                   "entity<|#|>Alice<|#|>person<|#|>Researcher\n"
                       + "entity<|#|>Bob<|#|>person<|#|>Scientist\n"
@@ -164,6 +220,7 @@ class ModelIndexIntegrationTest {
 
   @AfterEach
   void cleanup() {
+    extractionRelease.countDown();
     if (kb != null) bases.delete(kb, "admin");
     if (server != null) server.stop(0);
   }
@@ -227,6 +284,115 @@ class ModelIndexIntegrationTest {
 
   UUID automaticGeneration() {
     return jdbc.queryForObject("SELECT generation_id FROM rag_document_index_queue WHERE knowledge_base_id=?", UUID.class, kb);
+  }
+
+  @Test
+  void rowRunDoesNotSilentlyRebuildOtherDocumentsAfterModelChange() {
+    bind("embed3");
+    var a = documents.acceptText(kb, "admin", "version-a.txt", "Alice researches graphs.", "text", 64, 16);
+    documents.acceptText(kb, "admin", "version-b.txt", "Bob researches networks.", "text", 64, 16);
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    UUID active = jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb);
+    int before = extractionCalls.get();
+    bind("embed4");
+    workflow.action(kb, a.getDocumentId(), "admin", "run");
+    var failure = assertThrows(ModelFailure.class, this::advanceDocuments);
+    assertEquals("index_document_scope_incompatible", failure.getCode());
+    assertEquals(active, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+    assertEquals(before, extractionCalls.get());
+  }
+
+  @Test
+  void rowRunResumesOnlySuccessfulChunkCheckpointsFromCancelledGeneration() {
+    bind("embed3");
+    var a = documents.acceptText(kb, "admin", "resume.txt",
+        java.util.stream.IntStream.range(0, 100).mapToObj(i -> "distinctword" + i).collect(java.util.stream.Collectors.joining(" ")),
+        "text", 64, 16);
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    advanceDocuments();
+    var lease = indexes.claim().orElseThrow();
+    var chunks = indexes.chunks(lease);
+    assertTrue(chunks.size() > 1);
+    indexes.checkpoint(lease, (UUID) chunks.getFirst().get("chunk_id"), new Extraction(), new float[] {1, .2f, .3f});
+    workflow.action(kb, a.getDocumentId(), "admin", "pause");
+    workflow.action(kb, a.getDocumentId(), "admin", "run");
+    advanceDocuments();
+    UUID generation = automaticGeneration();
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND completed", Integer.class, generation));
+    assertTrue(indexer.runOnce());
+    assertEquals((chunks.size() - 1) * 2, extractionCalls.get());
+    advanceDocuments();
+    assertEquals("indexed", documents.get(kb, "admin", a.getDocumentId()).getStatus());
+  }
+
+  @Test
+  void runningOneQueuedDocumentDoesNotStartAnotherQueuedDocument() {
+    bind("embed3");
+    var a = documents.acceptText(kb, "admin", "queued-a.txt", "Alice researches graphs.", "text", 64, 16);
+    var b = documents.acceptText(kb, "admin", "queued-b.txt", "Bob researches networks.", "text", 64, 16);
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    workflow.action(kb, a.getDocumentId(), "admin", "run");
+    advanceDocuments();
+    assertEquals(List.of(a.getDocumentId()), jdbc.queryForList(
+        "SELECT document_id FROM rag_index_document WHERE generation_id=?", UUID.class, automaticGeneration()));
+    assertEquals("processed", documents.get(kb, "admin", b.getDocumentId()).getStatus());
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    assertTrue(workflow.pending().stream().noneMatch(q -> kb.equals(q.get("knowledge_base_id"))));
+    assertEquals("processed", documents.get(kb, "admin", b.getDocumentId()).getStatus());
+  }
+
+  @Test
+  void runningOneFailedDocumentDoesNotRunOtherFailedDocuments() {
+    bind("embed3");
+    var a = documents.acceptText(kb, "admin", "failed-a.txt", "Alice researches graphs.", "text", 64, 16);
+    var b = documents.acceptText(kb, "admin", "failed-b.txt", "Bob researches networks.", "text", 64, 16);
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    jdbc.update("UPDATE rag_document SET pipeline_error='model_http_error' WHERE knowledge_base_id=?", kb);
+    workflow.action(kb, a.getDocumentId(), "admin", "run");
+    advanceDocuments();
+    UUID generation = automaticGeneration();
+    assertEquals(List.of(a.getDocumentId()), jdbc.queryForList(
+        "SELECT document_id FROM rag_index_document WHERE knowledge_base_id=? AND generation_id=?",
+        UUID.class, kb, generation));
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    assertEquals("indexed", documents.get(kb, "admin", a.getDocumentId()).getStatus());
+    assertEquals("failed", documents.get(kb, "admin", b.getDocumentId()).getStatus());
+  }
+
+  @Test
+  void rowRebuildOnlyExtractsSelectedDocumentAndRunReusesCompletedCheckpoints() {
+    bind("embed3");
+    var a = documents.acceptText(kb, "admin", "stable.txt", "Alice researches graphs.", "text", 64, 16);
+    var b = documents.acceptText(kb, "admin", "selected.txt", "Bob researches networks.", "text", 64, 16);
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    ingestion.process(jobs.claim("scope-test").orElseThrow());
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    int before = extractionCalls.get();
+    workflow.action(kb, b.getDocumentId(), "admin", "rebuild");
+    advanceDocuments();
+    UUID generation = automaticGeneration();
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_document WHERE generation_id=?", Integer.class, generation));
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND completed", Integer.class, generation));
+    assertTrue(indexer.runOnce());
+    assertEquals(2, extractionCalls.get() - before, "Only selected chunk's extract and glean calls");
+    advanceDocuments();
+    assertEquals("indexed", documents.get(kb, "admin", a.getDocumentId()).getStatus());
+    before = extractionCalls.get();
+    workflow.action(kb, b.getDocumentId(), "admin", "run");
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    assertEquals(before, extractionCalls.get(), "Run resumes completed contributions instead of extracting again");
+    advanceDocuments();
   }
 
   @Test
@@ -455,6 +621,216 @@ class ModelIndexIntegrationTest {
     assertEquals("cancelled", state(generation));
     assertEquals(revision, queueRevision());
     assertEquals(generation, jdbc.queryForObject("SELECT generation_id FROM rag_document_index_queue WHERE knowledge_base_id=?", UUID.class, kb));
+  }
+
+  @Test
+  void streamedObjectsPersistBeforeCompletionButOnlySuccessfulStreamsCompleteChunks() throws Exception {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    holdExtraction.set(true);
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      var future = executor.submit(indexer::runOnce);
+      try {
+        assertTrue(extractionSent.await(5, TimeUnit.SECONDS));
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+        while (jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=?"
+            + " AND NOT completed AND extraction->'entities'->0->>'name'='Alice'", Integer.class, generation) == 0
+            && System.nanoTime() < until) Thread.sleep(20);
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=?"
+            + " AND NOT completed AND extraction->'entities'->0->>'name'='Alice'", Integer.class, generation));
+        assertFalse(future.isDone());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk_vector WHERE generation_id=?", Integer.class, generation));
+      } finally { extractionRelease.countDown(); }
+      assertTrue(future.get(10, TimeUnit.SECONDS));
+    }
+    assertEquals("ready", state(generation));
+    assertEquals("研究员", jdbc.queryForObject("SELECT attributes->'职业'->0->>'value' FROM rag_index_entity WHERE generation_id=? AND name='Alice'", String.class, generation));
+    assertEquals("合作", jdbc.queryForObject("SELECT relation_types->>0 FROM rag_index_relation WHERE generation_id=?", String.class, generation));
+    var graph = indexes.graph(kb, generation, "admin");
+    @SuppressWarnings("unchecked")
+    var entities = (List<Map<String, Object>>) graph.get("entities");
+    var alice = entities.stream().filter(e -> e.get("name").equals("Alice")).findFirst().orElseThrow();
+    assertEquals("研究员", json.readTree(alice.get("attributes").toString()).path("职业").get(0).path("value").asText());
+  }
+
+  @Test
+  void oldExtractionProtocolCannotMixItsCheckpointsIntoANewFormat() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    jdbc.update("UPDATE rag_index_generation SET prompt_version='lightrag-aaebfe1-text-v1' WHERE id=?", generation);
+    assertTrue(indexer.runOnce());
+    assertEquals("failed", state(generation));
+    assertEquals("index_version_unsupported", jdbc.queryForObject("SELECT error_code FROM rag_index_generation WHERE id=?", String.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND extraction IS NOT NULL", Integer.class, generation));
+  }
+
+  @Test
+  void pausingAnIdleExtractionCancelsTheModelSubscriptionWithoutPublishing() throws Exception {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    jdbc.update("UPDATE rag_index_generation SET automatic=TRUE WHERE id=?", generation);
+    jdbc.update("UPDATE rag_document_index_queue SET generation_id=? WHERE knowledge_base_id=?", generation, kb);
+    UUID document = jdbc.queryForObject("SELECT id FROM rag_document WHERE knowledge_base_id=?", UUID.class, kb);
+    holdExtraction.set(true);
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      var future = executor.submit(indexer::runOnce);
+      try {
+        assertTrue(extractionSent.await(5, TimeUnit.SECONDS));
+        workflow.action(kb, document, "admin", "pause");
+        assertTrue(future.get(3, TimeUnit.SECONDS));
+      } finally { extractionRelease.countDown(); }
+    }
+    assertEquals("cancelled", state(generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND completed", Integer.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=?", Integer.class, generation));
+  }
+
+  @Test
+  void completeJsonWithoutProviderSuccessCannotPublishIndexOrChunkVectors() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    truncateExtraction.set(true);
+    assertTrue(indexer.runOnce());
+    assertEquals("failed", state(generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND completed", Integer.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk_vector WHERE generation_id=?", Integer.class, generation));
+    assertNull(jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+  void retriesMissingEndpointsOnceThenKeepsRepairedOrDropsUnresolvedRelations(boolean repaired) {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    jdbc.update("UPDATE rag_index_generation SET gleaning=0 WHERE id=?", generation);
+    orphanRelations.set(true);
+    repairEndpoints.set(repaired);
+    extractionCalls.set(0);
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(generation));
+    int chunks = jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=?", Integer.class, generation);
+    assertEquals(chunks + 1, extractionCalls.get());
+    assertEquals(repaired ? 1 : 0, jdbc.queryForObject(
+        "SELECT COUNT(*) FROM rag_index_relation WHERE generation_id=?", Integer.class, generation));
+    assertTrue(jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=?", Integer.class, generation) > 0);
+  }
+
+  @Test
+  void typedEntityIdentityAndNativeAttributeValuesPersistWithChunkSources() {
+    bind("embed3"); ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    typedEntities.set(true);
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(generation));
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=? AND name='长安'", Integer.class, generation));
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=? AND attributes->'人口'->0->>'type'='integer' AND attributes->'人口'->0->'value'='35'::JSONB AND JSONB_ARRAY_LENGTH(source_ids)>0", Integer.class, generation));
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_relation WHERE generation_id=? AND source_id<>target_id AND JSONB_ARRAY_LENGTH(source_ids)>0", Integer.class, generation));
+  }
+
+  @Test
+  void incompleteSchemaCorrectionCannotPublishIndex() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    invalidEntityAt.set(1);
+    truncateCorrection.set(true);
+    assertTrue(indexer.runOnce());
+    assertEquals(2, extractionCalls.get());
+    assertEquals("failed", state(generation));
+    assertEquals("model_stream_incomplete", jdbc.queryForObject(
+        "SELECT error_code FROM rag_index_generation WHERE id=?", String.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk_vector WHERE generation_id=?", Integer.class, generation));
+    assertNull(jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
+  @Test
+  void repeatedMissingNameFailsWithSpecificCodeAndCannotPublishPartialIndex() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    invalidEntityAt.set(1);
+    repeatInvalidEntity.set(true);
+    assertTrue(indexer.runOnce());
+    assertEquals(2, extractionCalls.get());
+    assertEquals("failed", state(generation));
+    assertEquals("extraction_invalid_field_name", jdbc.queryForObject(
+        "SELECT error_code FROM rag_index_generation WHERE id=?", String.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND completed", Integer.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk_vector WHERE generation_id=?", Integer.class, generation));
+    assertNull(jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2})
+  void missingNameInInitialOrGleaningOutputIsCorrectedOnce(int invalidCall) {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    invalidEntityAt.set(invalidCall);
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(generation));
+    assertEquals(3, extractionCalls.get());
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=?", Integer.class, generation));
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_relation WHERE generation_id=?", Integer.class, generation));
+  }
+
+  @Test
+  void omittedAttributesDoNotFailIndexOrLoseRelations() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    omitAttributes.set(true);
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(generation));
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=? AND attributes='{}'::JSONB", Integer.class, generation));
+    assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_relation WHERE generation_id=?", Integer.class, generation));
+  }
+
+  @Test
+  void incompleteCorrectionCannotPublishChunkVectorsOrIndex() {
+    bind("embed3");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    orphanRelations.set(true);
+    repairEndpoints.set(true);
+    truncateCorrection.set(true);
+    assertTrue(indexer.runOnce());
+    assertEquals(2, extractionCalls.get());
+    assertEquals("failed", state(generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk WHERE generation_id=? AND completed", Integer.class, generation));
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_chunk_vector WHERE generation_id=?", Integer.class, generation));
+    assertNull(jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
+  @Test
+  void extensionParametersAreVersionedAndAppliedToProbesAndExtraction() {
+    bind("embed3");
+    var request = request("CHAT", "extensions", 0);
+    var extensions = Map.<String, Object>of("chat_template_kwargs", Map.of("enable_thinking", false), "top_p", 0.8);
+    request.setExtraBody(extensions);
+    var first = models.save(null, request, "admin");
+    UUID old = id(first), profile = models.version(old).getProfileId();
+    assertEquals(extensions, first.get("extraBody"));
+    assertEquals(extensions, models.version(old).getExtraBody());
+    request.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", true)));
+    models.save(profile, request, "admin");
+    assertEquals(extensions, models.version(old).getExtraBody());
+    assertEquals(true, models.test(old, "admin").get("success"));
+    assertFalse(lastChatRequest.get().path("chat_template_kwargs").path("enable_thinking").asBoolean(true));
+    models.bind(Map.of("extract", old, "summary", old), "admin");
+    ingest();
+    UUID generation = id(indexes.create(kb, "admin"));
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(generation));
+    assertFalse(lastChatRequest.get().path("chat_template_kwargs").path("enable_thinking").asBoolean(true));
+    var embedding = request("EMBEDDING", "embed3", 3);
+    embedding.setExtraBody(extensions);
+    assertThrows(IllegalArgumentException.class, () -> models.save(null, embedding, "admin"));
   }
 
   @Test

@@ -43,7 +43,8 @@ class QueryServiceTest {
                 0,
                 16000,
                 2048,
-                10));
+                10,
+                Map.of("chat_template_kwargs", Map.of("enable_thinking", false))));
     when(planner.systemPrompt(anyString())).thenAnswer(i -> "system:" + i.getArgument(0));
     service =
         new QueryService(
@@ -103,6 +104,8 @@ class QueryServiceTest {
     assertEquals(List.of("99"), out.getUnknownReferenceIds());
     service.query(kb, "admin", request);
     verify(gateway, times(2)).chat(any(), any());
+    verify(gateway, times(2)).chat(argThat(v -> v.getExtraBody().equals(
+        Map.of("chat_template_kwargs", Map.of("enable_thinking", false)))), any());
     assertTrue(out.getPrompt().isEmpty());
   }
 

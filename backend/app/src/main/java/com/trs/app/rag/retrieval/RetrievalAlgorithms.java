@@ -136,8 +136,8 @@ public class RetrievalAlgorithms {
       chunks = db.chunks(vectors.get("query"), r.getChunkTopK(), r.getCosineThreshold());
     }
     return new Raw(
-        roundRobin(List.of(local, global), Node::getName),
-        roundRobin(List.of(localEdges, globalEdges), e -> List.of(e.getSource(), e.getTarget())),
+        roundRobin(List.of(local, global), Node::getId),
+        roundRobin(List.of(localEdges, globalEdges), Edge::getId),
         chunks,
         branches);
   }

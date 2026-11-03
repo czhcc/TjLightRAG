@@ -170,6 +170,7 @@ function categoryApi(probeFails = false) {
     baseUrl: "https://example.com/v1", keyConfigured: true,
     dimensions: kind === "EMBEDDING" ? 1024 : 0,
     contextTokens: 16000, maxOutputTokens: 2000, timeoutSeconds: 30,
+    extraBody: kind === "CHAT" ? { chat_template_kwargs: { enable_thinking: true } } : {},
   }));
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith("/test")) return {
@@ -236,6 +237,35 @@ it("shows a failed probe beside its model and permits retry", async () => {
   expect((within(item).getByRole("button", { name: "连接测试" }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(within(item).getByRole("button", { name: "连接测试" }));
   await waitFor(() => expect(fetch.mock.calls.filter(([url]) => url.endsWith("/test"))).toHaveLength(2));
+});
+
+it("saves and edits text-model extension JSON without stringifying nested parameters", async () => {
+  const fetch = categoryApi();
+  render(<Models onSessionExpired={() => {}} />);
+  await screen.findByText("配置-CHAT");
+  fireEvent.click(screen.getByRole("button", { name: "创建新版本" }));
+  const input = screen.getByLabelText("扩展参数（JSON）");
+  expect(JSON.parse((input as HTMLTextAreaElement).value)).toEqual({ chat_template_kwargs: { enable_thinking: true } });
+  fireEvent.change(input, { target: { value: '{"chat_template_kwargs":{"enable_thinking":false}}' } });
+  fireEvent.click(screen.getByRole("button", { name: "保存模型配置" }));
+  await screen.findByText("模型新版本已保存");
+  const call = fetch.mock.calls.find(([, init]) => init?.method === "PUT");
+  expect(JSON.parse(String(call?.[1]?.body)).extraBody).toEqual({ chat_template_kwargs: { enable_thinking: false } });
+  fireEvent.click(screen.getByRole("button", { name: "向量模型" }));
+  expect(screen.queryByLabelText("扩展参数（JSON）")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "文本模型" }));
+  expect((screen.getByLabelText("扩展参数（JSON）") as HTMLTextAreaElement).value).toBe("");
+});
+
+it.each(['{"chat_template_kwargs":', '[]', 'null', '"string"'])("rejects invalid extension JSON: %s", async value => {
+  const fetch = categoryApi();
+  render(<Models onSessionExpired={() => {}} />);
+  await screen.findByText("配置-CHAT");
+  fireEvent.click(screen.getByRole("button", { name: "创建新版本" }));
+  fireEvent.change(screen.getByLabelText("扩展参数（JSON）"), { target: { value } });
+  expect((screen.getByRole("button", { name: "保存模型配置" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole("alert").textContent).toContain("有效的 JSON 对象");
+  expect(fetch.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });
 
 it("prevents duplicate probes and aborts an in-flight probe when leaving the page", async () => {

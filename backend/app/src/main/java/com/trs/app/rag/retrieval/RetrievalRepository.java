@@ -28,7 +28,7 @@ public class RetrievalRepository {
           + " e.knowledge_base_id=n.knowledge_base_id AND e.generation_id=n.generation_id AND"
           + " (e.source_id=n.id OR e.target_id=n.id)) degree";
   private static final String EDGE =
-      "SELECT r.*,s.name source_name,t.name target_name,((SELECT COUNT(*) FROM rag_index_relation e"
+      "SELECT r.*,s.name source_name,t.name target_name,s.entity_type source_type,t.entity_type target_type,((SELECT COUNT(*) FROM rag_index_relation e"
           + " WHERE e.knowledge_base_id=r.knowledge_base_id AND e.generation_id=r.generation_id AND"
           + " (e.source_id=r.source_id OR e.target_id=r.source_id))+(SELECT COUNT(*) FROM"
           + " rag_index_relation e WHERE e.knowledge_base_id=r.knowledge_base_id AND"
@@ -124,15 +124,19 @@ public class RetrievalRepository {
         rs.getString("description"),
         sourceIds(rs.getString("source_ids")),
         rs.getInt("degree"),
-        score);
+        score, com.trs.app.rag.index.EntityIdentity.readAttributes(rs.getString("attributes")));
   }
 
   private Edge edge(ResultSet rs, Double score) throws SQLException {
     String a = rs.getString("source_name"), b = rs.getString("target_name");
-    if (a.compareTo(b) > 0) {
+    String aId = rs.getString("source_id"), bId = rs.getString("target_id");
+    String aType = rs.getString("source_type"), bType = rs.getString("target_type");
+    if (a.compareTo(b) > 0 || a.equals(b) && aType.compareTo(bType) > 0) {
       String tmp = a;
       a = b;
       b = tmp;
+      tmp = aId; aId = bId; bId = tmp;
+      tmp = aType; aType = bType; bType = tmp;
     }
     return new Edge(
         rs.getString("id"),
@@ -143,7 +147,7 @@ public class RetrievalRepository {
         rs.getDouble("weight"),
         sourceIds(rs.getString("source_ids")),
         rs.getInt("rank"),
-        score);
+        score, aId, bId, aType, bType, json.readValue(rs.getString("relation_types"), List.class));
   }
 
   /**
@@ -258,24 +262,24 @@ public class RetrievalRepository {
     if (edges.isEmpty()) return List.of();
     LinkedHashSet<String> names = new LinkedHashSet<>();
     for (var edge : edges) {
-      names.add(edge.getSource());
-      names.add(edge.getTarget());
+      names.add(edge.getSourceId());
+      names.add(edge.getTargetId());
     }
     List<Object> args = new ArrayList<>();
     args.add(s.getKnowledgeBaseId());
     args.add(s.getGenerationId());
-    args.addAll(names);
+    args.addAll(names.stream().map(UUID::fromString).toList());
     var rows =
         jdbc.query(
             NODE
                 + " FROM rag_index_entity n WHERE n.knowledge_base_id=? AND n.generation_id=? AND"
-                + " n.name IN ("
+                + " n.id IN ("
                 + String.join(",", Collections.nCopies(names.size(), "?"))
                 + ")",
             (rs, n) -> node(rs, null),
             args.toArray());
     Map<String, Node> found = new HashMap<>();
-    for (var row : rows) found.put(row.getName(), row);
+    for (var row : rows) found.put(row.getId(), row);
     if (found.size() != names.size()) throw new RetrievalFailure("retrieval_index_incomplete", 409);
     return names.stream().map(found::get).toList();
   }
