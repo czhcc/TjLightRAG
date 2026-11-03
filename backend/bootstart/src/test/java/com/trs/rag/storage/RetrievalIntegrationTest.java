@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.sun.net.httpserver.HttpServer;
 import com.trs.app.rag.*;
+import com.trs.app.rag.graph.GraphService;
 import com.trs.app.rag.index.*;
 import com.trs.app.rag.ingestion.*;
 import com.trs.app.rag.model.*;
@@ -68,6 +69,7 @@ class RetrievalIntegrationTest {
   @Autowired ConversationQueries conversationQueries;
   @Autowired QueryStreams streams;
   @Autowired RetrievalService retrieval;
+  @Autowired GraphService graph;
   @Autowired RetrievalRepository repository;
   @Autowired ModelConfigurationService models;
   @Autowired KnowledgeBaseService bases;
@@ -97,6 +99,72 @@ class RetrievalIntegrationTest {
   List<tools.jackson.databind.JsonNode> rewriteMessages = new CopyOnWriteArrayList<>();
   List<tools.jackson.databind.JsonNode> answerMessages = new CopyOnWriteArrayList<>();
   volatile CountDownLatch entered, release;
+
+  @Test
+  void graphSearchAndExpansionAreTypedLiteralBoundedAndGenerationScoped() throws Exception {
+    assertEquals("retrieval_no_active_index", assertThrows(RetrievalFailure.class, () -> graph.types(kb, "admin")).getCode());
+    UUID gen = seed(3, "");
+    indexes.activate(kb, gen, null, "admin");
+    assertTrue(graph.types(kb, "admin").getTypes().contains("person"));
+    assertEquals(2, graph.search(kb, "admin", "", "").getLinks().size());
+    var found = graph.search(kb, "admin", "PERSON", "Alice");
+    assertTrue(found.getNodes().isEmpty());
+    found = graph.search(kb, "admin", "person", "ali");
+    assertEquals(1, found.getNodes().size());
+    assertEquals("Alice", found.getNodes().getFirst().getName());
+    assertTrue(graph.search(kb, "admin", "", "%").getNodes().isEmpty());
+    insertNode(gen, uuid("typed-place"), "长安", "地", "地名", List.of(c(0)));
+    insertNode(gen, uuid("typed-org"), "长安", "网", "机构名", List.of(c(0)));
+    assertEquals(2, graph.search(kb, "admin", "", "长安").getNodes().size());
+    assertEquals(uuid("typed-org"), graph.search(kb, "admin", "网", "长安").getNodes().getFirst().getId());
+    UUID next = seed(3, "new-"); indexes.activate(kb, next, gen, "admin");
+    var expanded = graph.neighbors(kb, "admin", gen, uuid("Alice"), 0);
+    assertEquals(gen, expanded.getGenerationId());
+    assertEquals(Set.of("Alice", "LightRAG"), expanded.getNodes().stream().map(n -> n.getName()).collect(java.util.stream.Collectors.toSet()));
+    assertEquals(1, expanded.getLinks().size());
+    assertFalse(expanded.isHasMore());
+    assertThrows(RagAccessException.class, () -> graph.neighbors(kb, "admin", next, uuid("Alice"), 0));
+    UUID other = bases.create("admin", "other graph", "").getId();
+    try { assertThrows(RagAccessException.class, () -> graph.neighbors(other, "admin", gen, uuid("Alice"), 0)); }
+    finally { bases.delete(other, "admin"); }
+    assertThrows(IllegalArgumentException.class, () -> graph.neighbors(kb, "admin", gen, uuid("Alice"), -1));
+    assertEquals(0, keywordCalls.get());
+    assertTrue(embeddingInputs.isEmpty());
+    var session = login();
+    var response = session.client().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+        + "/api/knowledge-bases/" + kb + "/graph?type=person&name=new-Alice")).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, response.statusCode());
+    assertEquals(1, json.readTree(response.body()).path("nodes").size());
+    assertEquals(next.toString(), json.readTree(response.body()).path("generationId").asText());
+    var neighbors = session.client().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+        + "/api/knowledge-bases/" + kb + "/graph/entities/" + uuid("Alice") + "/neighbors?generationId=" + gen))
+        .GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, neighbors.statusCode());
+    assertEquals(2, json.readTree(neighbors.body()).path("nodes").size());
+    assertFalse(json.readTree(neighbors.body()).path("hasMore").asBoolean(true));
+  }
+
+  @Test
+  void graphExpansionPagesHighDegreeNodesAndChecksReaderAccess() {
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin");
+    for (int i = 0; i < 105; i++) {
+      UUID id = uuid("neighbor-" + i);
+      insertNode(gen, id, "邻居" + i, "物", "", List.of(c(0)));
+      insertEdge(gen, uuid("edge-" + i), uuid("Alice"), id, "关联", "related", 1, List.of(c(0)));
+    }
+    var page = graph.neighbors(kb, "admin", gen, uuid("Alice"), 0);
+    assertEquals(100, page.getLinks().size()); assertTrue(page.isHasMore());
+    var tail = graph.neighbors(kb, "admin", gen, uuid("Alice"), page.getNextOffset());
+    assertEquals(6, tail.getLinks().size()); assertFalse(tail.isHasMore());
+    assertTrue(Collections.disjoint(page.getLinks().stream().map(e -> e.getId()).toList(), tail.getLinks().stream().map(e -> e.getId()).toList()));
+    assertEquals(100, graph.search(kb, "admin", "", "").getNodes().size());
+    assertTrue(graph.search(kb, "admin", "", "").isHasMore());
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'graph-reader',password_hash FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "graph-reader", KnowledgeRole.READER);
+    assertFalse(graph.search(kb, "graph-reader", "person", "").getNodes().isEmpty());
+    bases.revoke(kb, "admin", "graph-reader");
+    assertThrows(RagAccessException.class, () -> graph.neighbors(kb, "graph-reader", gen, uuid("Alice"), 0));
+  }
 
   @Test
   void conversationsArePrivateToUserAndKnowledgeBaseAndOnlyCompletedTurnsBecomeHistory() {

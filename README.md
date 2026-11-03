@@ -119,6 +119,14 @@ prod profile 必须设置 DB_URL、DB_USERNAME、DB_PASSWORD、RAG_EMBEDDING_MOD
 
 查询固定开始时的索引代及其向量模型，支持模型切换期间读取旧代。首次默认精确 cosine，未自动启用会受过滤影响的全局 ANN；相关实验和差异见 docs/migration/STAGE_4.md。关键词未绑定时使用当前代的抽取模型，naive 不调用关键词模型。配置 `RAG_RETRIEVAL_MAX_CONCURRENCY` / `RAG_RETRIEVAL_TIMEOUT_SECONDS` 可限制实例并发及调用期限。
 
+## 图谱查看
+
+左侧“知识库问答”下方提供“图谱查看”。按实体类型和名称查询已发布索引中的实体，名称支持部分匹配；不填写条件可浏览当前图谱。D3 关联图按类型着色，显示实体名称与关系类型，支持拖动、缩放和重置视图。单击节点查看描述与属性，双击节点展开相邻实体，也可聚焦节点按 Enter 或空格展开。
+
+每次查询最多显示 100 个实体及其间的 200 条关系；邻接关系每次加载 100 条，提示有更多时再次双击继续展开。图中最多显示 500 个节点、1000 条关系，按实体和关系 ID 去重。同名不同类型分别保留。图谱只读，不调用模型；当前知识库成员（含只读成员）可查看，每次展开保持原索引代并复核权限。未完成索引构建时会显示提示。
+
+接口为 `GET /api/knowledge-bases/{kb}/graph/types`、`GET /api/knowledge-bases/{kb}/graph?type=&name=` 和 `GET /api/knowledge-bases/{kb}/graph/entities/{id}/neighbors?generationId={generationId}&offset=0`。邻接响应的 `hasMore`、`nextOffset` 用于继续读取同一节点的下一页。
+
 ## 知识库问答
 
 绑定回答模型并激活索引后，在“知识库问答”中提问，选择五种模式、可选重排，查看流式答案和原文引用。“停止生成”中止读取并通知服务端取消；断流或模型错误显示未完成，不将部分内容视为成功。支持上下文/实际提示词预览。支持按用户和知识库隔离的持久化多轮对话，回答缓存禁用；实时和历史回复支持 Markdown 标题、列表、表格、引用和代码块，HTML 转义且危险链接过滤，外部图片只显示替代文字，未匹配引用会提示核对。
