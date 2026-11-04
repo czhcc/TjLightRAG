@@ -1,11 +1,11 @@
-package com.trs.app.rag.ingestion;
+package com.trs.documentparser;
 
 import lombok.Getter;
 
 /**
  * Safe, user-visible failure code without raw parser input or exception text.
  *
- * @author agent
+ * @author czhcc
  */
 @Getter
 public class ProcessingFailure extends RuntimeException {
@@ -14,7 +14,7 @@ public class ProcessingFailure extends RuntimeException {
   /**
    * Initializes ProcessingFailure for the document pipeline.
    *
-   * @author agent
+   * @author czhcc
    */
   public ProcessingFailure(String code) {
     super(code);

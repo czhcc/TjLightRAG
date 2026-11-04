@@ -1,11 +1,11 @@
-package com.trs.app.rag.ingestion;
+package com.trs.documentparser;
 
 import lombok.*;
 
 /**
  * Persisted ingestion contract value: ParsedDocument.
  *
- * @author agent
+ * @author czhcc
  */
 @Getter
 @Setter
