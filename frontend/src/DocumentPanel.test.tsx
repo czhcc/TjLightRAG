@@ -17,7 +17,26 @@ function api(errorCode?: string) {
   return fetch;
 }
 
+it("uploads PDF and Office documents through the existing queue", async () => {
+  const fetch = api();
+  render(<DocumentPanel kb="kb1" canWrite onSessionExpired={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "上传文档" }));
+  const picker = screen.getByLabelText("选择文件");
+  expect(picker.getAttribute("accept")).toContain(".pdf");
+  expect(picker.getAttribute("accept")).toContain(".docx");
+  fireEvent.change(picker, { target: { files: [
+    new File(["pdf bytes"], "report.pdf"), new File(["docx bytes"], "report.docx"),
+    new File(["xlsx bytes"], "report.xlsx"), new File(["pptx bytes"], "slides.pptx"),
+  ] } });
+  fireEvent.click(screen.getByRole("button", { name: "开始上传" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(fetch.mock.calls.filter(([url]) => url.endsWith("/upload"))).toHaveLength(4);
+});
+
 it.each([
+  ["document_parse_failed", "文档解析失败，请检查文件是否损坏或另存为受支持的格式后重新上传。"],
+  ["document_format_mismatch", "文件内容与扩展名不一致，请确认文件格式后重新上传。"],
+  ["document_encrypted", "文档已加密，请解除密码保护后重新上传。"],
   ["model_timeout", "模型调用超时，请增大所用模型的超时秒数，保存配置后重新构建索引。"],
   ["model_truncated_or_invalid", "模型输出被截断或返回结果不完整，请检查最大输出 token、上下文限制及模型服务后点击运行重试。"],
   ["model_http_error", "模型服务返回 HTTP 错误，请检查服务地址、访问权限及服务端日志后点击运行重试。"],

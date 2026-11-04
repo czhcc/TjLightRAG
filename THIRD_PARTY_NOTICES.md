@@ -1,5 +1,10 @@
 # Third-party notices
 
+## Unified document parsing
+
+- Apache Tika 4.2.0 (Apache License 2.0): https://tika.apache.org/ . The artifact license and notice from tika-core 4.2.0 are preserved in [third_party/Apache-Tika/LICENSE](third_party/Apache-Tika/LICENSE) and [third_party/Apache-Tika/NOTICE](third_party/Apache-Tika/NOTICE).
+- The standard parser package brings dependencies including Apache PDFBox and Apache POI. Each artifact retains its own license and notice; the Tika notice does not replace their terms. POI OOXML schemas used to generate test fixtures are test-only.
+
 ## HKUDS/LightRAG
 
 - Project: https://github.com/HKUDS/LightRAG

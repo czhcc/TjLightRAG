@@ -41,7 +41,7 @@ public class IngestionProcessor {
       var input = jobs.load(lease);
       var parsed =
           input.getParsedText() == null
-              ? parser.parse(input.getOriginal(), input.getFormat())
+              ? parser.parse(input.getOriginal(), input.getFormat(), stopped)
               : parser.fromText(input.getParsedText(), input.getFormat());
       if (!jobs.heartbeat(lease)) throw new LeaseLostException();
       jobs.checkpoint(lease, parsed.getText());
