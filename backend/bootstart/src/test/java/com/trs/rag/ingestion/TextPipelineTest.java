@@ -3,6 +3,8 @@ package com.trs.rag.ingestion;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.trs.app.rag.ingestion.*;
+import com.trs.documentparser.DocumentParser;
+import com.trs.documentparser.ProcessingFailure;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.junit.jupiter.api.Test;

@@ -1,6 +1,8 @@
 package com.trs.app.rag.ingestion;
 
 import com.trs.app.rag.RagAccessException;
+import com.trs.documentparser.DocumentParser;
+import com.trs.documentparser.ProcessingFailure;
 import java.util.concurrent.CancellationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

@@ -121,7 +121,7 @@ flowchart LR
 
 ## 5. Java 与前端结构规划
 
-保留 `common`、`app`、`bootstart` 三模块，不提前拆成微服务。
+初始方案采用 `common`、`app`、`bootstart` 三模块，不提前拆成微服务。当前另有独立 `document-parser` 模块承载文档解析，供 `app` 依赖；仍在同一服务进程中运行，不引入远程解析服务。
 
 ```text
 backend/common/src/main/java/com/trs/common/rag/

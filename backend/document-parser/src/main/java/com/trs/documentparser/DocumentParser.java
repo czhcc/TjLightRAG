@@ -1,4 +1,4 @@
-package com.trs.app.rag.ingestion;
+package com.trs.documentparser;
 
 import com.vladsch.flexmark.ast.Heading;
 import com.vladsch.flexmark.parser.Parser;
@@ -6,19 +6,17 @@ import com.vladsch.flexmark.util.ast.Node;
 import java.nio.*;
 import java.nio.charset.*;
 import java.util.*;
-import org.springframework.stereotype.Component;
 
 /**
  * TXT/Markdown parser preserving decoded text and source offsets; no HTML is executed.
  *
- * @author agent
+ * @author czhcc
  */
-@Component
 public class DocumentParser {
   /**
    * Strictly decodes supported text and extracts source-preserving structure.
    *
-   * @author agent
+   * @author czhcc
    */
   public ParsedDocument parse(byte[] original, String format) {
     String text;
@@ -40,7 +38,7 @@ public class DocumentParser {
   /**
    * Builds structural metadata without rewriting the persisted source text.
    *
-   * @author agent
+   * @author czhcc
    */
   public ParsedDocument fromText(String text, String format) {
     if (!Set.of("text", "markdown").contains(format))
@@ -76,7 +74,7 @@ public class DocumentParser {
   /**
    * Finds the heading ancestry at a Unicode codepoint offset.
    *
-   * @author agent
+   * @author czhcc
    */
   public List<String> headingPath(ParsedDocument parsed, int position) {
     var path = new TreeMap<Integer, String>();
@@ -91,7 +89,7 @@ public class DocumentParser {
   /**
    * Assigns ancestry in one source-ordered pass instead of rescanning all headings per block.
    *
-   * @author agent
+   * @author czhcc
    */
   public void assignHeadings(
       ParsedDocument parsed,

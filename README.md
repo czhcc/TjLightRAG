@@ -6,7 +6,7 @@ JDK 21 / Spring Boot 4.1.2 / Spring AI 2.0.2 / PostgreSQL 18 + pgvector 0.8.7 / 
 
 ## 目录
 
-- backend：Maven 父项目，common（通用代码）、app（业务）、bootstart（启动与配置）
+- backend：Maven 父项目，common（通用代码）、document-parser（独立文档解析）、app（业务）、bootstart（启动与配置）。app 依赖 common 和 document-parser，bootstart 依赖 app。
 - frontend：pnpm 前端，中英文登录、知识库、文档/任务、模型配置及索引管理
 - docs：代码规范
 - docker：前后端同一应用镜像，数据库独立容器，Compose 部署

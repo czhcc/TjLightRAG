@@ -1,5 +1,7 @@
 package com.trs.app.rag.ingestion;
 
+import com.trs.documentparser.ChunkPiece;
+import com.trs.documentparser.ProcessingFailure;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CancellationException;
