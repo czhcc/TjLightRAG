@@ -167,7 +167,7 @@ Spring AI 调用按抽取、关键词、摘要、回答、embedding、rerank 分
 | 6：删除、重建和图谱管理 | 阶段 5 验收通过 | 按剩余来源重建共享知识；实现安全删除、索引新代构建/切换/回滚，提供有限邻域浏览 | 删除/重建服务、索引管理接口、图谱浏览页面 | 被删内容不可检索，共享知识保留；失败不破坏当前索引，无悬空边或孤立向量 |
 | 7：格式扩展、评估与交付 | 阶段 0—6 核心闭环验收通过 | 分批扩展 PDF/DOCX 和其他分块策略；单独评估 OCR/多模态；验证质量、性能与部署恢复 | 扩展解析器、评估报告、部署/升级/备份恢复说明及能力清单 | 已交付格式通过样本测试；指标满足预先冻结的门槛；容器重建与恢复不丢数据，未实现能力明确列出 |
 
-文档解析专项属于阶段 2 和阶段 7：先完成 TXT/Markdown 的解析与分块闭环，再在阶段 7 扩展 PDF/DOCX。阶段 2 已采用 Java NIO 严格 UTF-8 解析 TXT、flexmark-java 解析 Markdown 标题结构、JTokkit 提供 cl100k_base tokenizer，并移植 LightRAG 固定 token 窗口与来源追踪。Tika、PDFBox、POI 仍为阶段 7 的待验证候选；不得以选用解析库代替 LightRAG 算法移植。
+文档解析专项属于阶段 2 和阶段 7：先完成 TXT/Markdown 的解析与分块闭环，再扩展 PDF/DOCX。阶段 2 已采用 Java NIO 严格 UTF-8 解析 TXT、flexmark-java 解析 Markdown 标题结构、JTokkit 提供 cl100k_base tokenizer，并移植 LightRAG 固定 token 窗口与来源追踪。当前 document-parser 已接入 Apache Tika 4.2.0 标准解析器（包含 PDFBox、POI），扩展 PDF、Office、OpenDocument、HTML、RTF、CSV 等正文提取，尚未启用 OCR。LightRAG 分块和检索沿用现有移植实现，详见文档管理设计与实现。
 
 ### 阶段 0：建立移植契约与对照基线
 

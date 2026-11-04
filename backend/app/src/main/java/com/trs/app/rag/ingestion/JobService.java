@@ -109,7 +109,7 @@ public class JobService {
             .orElseThrow(LeaseLostException::new);
     if (!metadata.getTokenizer().equals(tokenizer.getName())
         || !metadata.getChunkStrategy().equals(DocumentService.STRATEGY)
-        || !metadata.getParserVersion().equals(DocumentService.PARSER))
+        || !Set.of(DocumentService.PARSER, "txt-flexmark-v1").contains(metadata.getParserVersion()))
       throw new ProcessingFailure("unsupported_version");
     byte[] original =
         jdbc.queryForObject(

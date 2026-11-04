@@ -94,6 +94,34 @@ class IngestionIntegrationTest {
   }
 
   @Test
+  void tikaFormatsUseTheExistingRevisionChunkAndSourcePipeline() {
+    String html = "<!DOCTYPE html><html><body><h1>知识库</h1><p>HTML evidence 中文🙂</p></body></html>";
+    var submission = documents.acceptUpload(kb, "admin", "资料/report.html",
+        html.getBytes(StandardCharsets.UTF_8), 32, 8);
+    assertEquals("html", jdbc.queryForObject(
+        "SELECT format FROM rag_document_revision WHERE id=?", String.class, submission.getRevisionId()));
+    run(submission);
+    assertEquals("processed", jobs.get(kb, "admin", submission.getJobId()).getStatus());
+    String parsed = documents.content(kb, "admin", submission.getDocumentId(), submission.getRevisionId());
+    assertTrue(parsed.contains("HTML evidence 中文🙂"));
+    assertFalse(parsed.contains("<h1>"));
+    assertTrue(documents.chunks(kb, "admin", submission.getDocumentId(), null, 0, 20).getTotal() > 0);
+    assertArrayEquals(html.getBytes(StandardCharsets.UTF_8),
+        documents.original(kb, "admin", submission.getDocumentId(), submission.getRevisionId()));
+  }
+
+  @Test
+  void legacyParserVersionsRemainResumableAndTextSubmissionStaysTextOnly() {
+    var submission = text("legacy.md", "# Heading\n旧文档🙂 source");
+    jdbc.update("UPDATE rag_document_revision SET parser_version='txt-flexmark-v1' WHERE id=?",
+        submission.getRevisionId());
+    run(submission);
+    assertEquals("processed", jobs.get(kb, "admin", submission.getJobId()).getStatus());
+    assertThrows(IllegalArgumentException.class,
+        () -> documents.acceptText(kb, "admin", "fake.pdf", "text", "pdf", 32, 8));
+  }
+
+  @Test
   void persistsOriginalChunksAndSharedSourcesWithoutDuplicateJobs() {
     String input = "# Heading\n\n知识图谱🙂 retrieval. ".repeat(12);
     var first = text("first.md", input);
@@ -199,11 +227,13 @@ class IngestionIntegrationTest {
     assertEquals("invalid_encoding", jobs.get(kb, "admin", invalid.getJobId()).getErrorCode());
     assertTrue(jobs.claim("worker").isEmpty());
     assertThrows(IllegalArgumentException.class, () -> text("empty.md", " \n"));
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            documents.acceptUpload(
-                kb, "admin", "file.pdf", "%PDF-".getBytes(StandardCharsets.UTF_8), 32, 8));
+    var corrupt = documents.acceptUpload(
+        kb, "admin", "file.pdf", "%PDF-".getBytes(StandardCharsets.UTF_8), 32, 8);
+    run(corrupt);
+    assertEquals("failed", jobs.get(kb, "admin", corrupt.getJobId()).getStatus());
+    assertEquals("document_parse_failed", jobs.get(kb, "admin", corrupt.getJobId()).getErrorCode());
+    assertThrows(IllegalArgumentException.class, () -> documents.acceptUpload(
+        kb, "admin", "fake.txt", "%PDF-".getBytes(StandardCharsets.UTF_8), 32, 8));
   }
 
   @Test

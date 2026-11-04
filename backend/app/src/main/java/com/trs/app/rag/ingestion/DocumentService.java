@@ -1,6 +1,8 @@
 package com.trs.app.rag.ingestion;
 
 import com.trs.app.rag.*;
+import com.trs.documentparser.DocumentFormats;
+import com.trs.documentparser.DocumentParser;
 import java.nio.*;
 import java.nio.charset.*;
 import java.security.*;
@@ -23,8 +25,8 @@ import tools.jackson.databind.json.JsonMapper;
 @RequiredArgsConstructor
 @Transactional
 public class DocumentService {
-  public static final int MAX_BYTES = 5 * 1024 * 1024;
-  public static final String STRATEGY = "lightrag-fixed-utf8-safe-v1", PARSER = "txt-flexmark-v1";
+  public static final int MAX_BYTES = DocumentParser.MAX_BYTES;
+  public static final String STRATEGY = "lightrag-fixed-utf8-safe-v1", PARSER = DocumentParser.VERSION;
   private final JdbcTemplate jdbc;
   private final KnowledgeBaseService access;
   private final RagTokenizer tokenizer;
@@ -40,6 +42,8 @@ public class DocumentService {
   public Submission acceptText(
       UUID kb, String username, String source, String text, String format, int size, int overlap) {
     access.requireAccess(kb, username, true);
+    if (!Set.of("text", "markdown").contains(Objects.toString(format, "")))
+      throw new IllegalArgumentException("Unsupported text format");
     if (text == null || text.isBlank()) throw new IllegalArgumentException("Empty document");
     byte[] bytes;
     try {
@@ -57,9 +61,9 @@ public class DocumentService {
   }
 
   /**
-   * Accepts bounded TXT/Markdown bytes; decoding is deferred to the worker.
+   * Accepts supported document bytes; Tika parsing is deferred to the worker.
    *
-   * @author agent
+   * @author czhcc
    */
   public Submission acceptUpload(
       UUID kb, String username, String filename, byte[] bytes, int size, int overlap) {
@@ -69,14 +73,9 @@ public class DocumentService {
     if (source.startsWith("/") || source.contains(":")
         || Arrays.stream(source.split("/", -1)).anyMatch(part -> part.isBlank() || part.equals("..") || part.equals(".")))
       throw new IllegalArgumentException("Invalid relative filename");
-    String lower = source.toLowerCase(Locale.ROOT);
-    String format =
-        lower.endsWith(".txt")
-            ? "text"
-            : lower.endsWith(".md") || lower.endsWith(".markdown") ? "markdown" : null;
-    if (format == null
-        || bytes == null
-        || (bytes.length >= 5
+    String format = DocumentFormats.fromFilename(source);
+    if (bytes == null
+        || ((format.equals("text") || format.equals("markdown")) && bytes.length >= 5
             && new String(bytes, 0, 5, StandardCharsets.ISO_8859_1).equals("%PDF-")))
       throw new IllegalArgumentException("Unsupported file");
     return accept(kb, username, source, bytes, format, size, overlap);
@@ -88,7 +87,7 @@ public class DocumentService {
         || source.isBlank()
         || source.length() > 255
         || source.codePoints().anyMatch(Character::isISOControl)
-        || !Set.of("text", "markdown").contains(format)
+        || !DocumentFormats.supports(format)
         || size < 16
         || size > 4096
         || overlap < 0

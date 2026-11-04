@@ -11,6 +11,8 @@ type Upload = { file: File; name: string; state: "pending" | "success" | "failed
 const primary = "rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40";
 const secondary = "rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40";
 const active = new Set(["pending", "parsing", "processing", "waiting_index", "indexing"]);
+const acceptedFiles = ".txt,.md,.markdown,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.html,.htm,.csv";
+const supportedFile = /\.(txt|md|markdown|pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|html?|csv)$/i;
 
 function Modal({ title, close, busy, children }: { title: string; close: () => void; busy: boolean; children: ReactNode }) {
   const root = useRef<HTMLDivElement>(null);
@@ -137,7 +139,7 @@ export default function DocumentPanel({ kb, canWrite, onSessionExpired }: {
       for (const item of uploads.filter(item => item.state !== "success")) {
         if (controller.signal.aborted) return;
         try {
-          if (!/\.(txt|md|markdown)$/i.test(item.name) || item.file.size === 0 || item.file.size > 5 * 1024 * 1024)
+          if (!supportedFile.test(item.name) || item.file.size === 0 || item.file.size > 5 * 1024 * 1024)
             throw new Error("Unsupported upload");
           const body = new FormData(); body.append("file", item.file, item.name);
           body.append("chunkSize", String(chunkSize)); body.append("overlap", String(overlap));
@@ -221,7 +223,7 @@ export default function DocumentPanel({ kb, canWrite, onSessionExpired }: {
       </form>}
       {dialog === "upload" && <div className="space-y-4">
         <p className="text-sm text-slate-500">{t("workspace.fileLimit")}</p>
-        <label>{t("workspace.chooseFile")}<input type="file" multiple accept=".txt,.md,.markdown" disabled={busy} onChange={e => { choose(e.target.files); e.target.value = ""; }} /></label>
+        <label>{t("workspace.chooseFile")}<input type="file" multiple accept={acceptedFiles} disabled={busy} onChange={e => { choose(e.target.files); e.target.value = ""; }} /></label>
         <label>{t("documents.chooseDirectory")}<input type="file" multiple {...{ webkitdirectory: "" }} disabled={busy} onChange={e => { choose(e.target.files); e.target.value = ""; }} /></label>
         {uploads.length > 0 && <ul className="max-h-48 overflow-y-auto rounded-lg bg-slate-50 p-3 text-sm">{uploads.map(item => <li key={item.name} className="flex justify-between gap-3 py-1"><span className="break-all">{item.name}</span><span className={item.state === "failed" ? "text-red-700" : "text-slate-500"}>{t(`documents.uploadStates.${item.state}`)}</span></li>)}</ul>}
         {options}<div className="flex gap-3"><button className={primary} disabled={busy || !windowValid || uploads.length === 0 || uploads.every(item => item.state === "success")} onClick={() => void upload()}>{t(busy ? "documents.uploading" : "documents.startUpload")}</button><button className={secondary} disabled={busy} onClick={close}>{t("documents.close")}</button><button className={secondary} disabled={busy || uploads.length === 0} onClick={() => setUploads([])}>{t("documents.clearFiles")}</button></div>

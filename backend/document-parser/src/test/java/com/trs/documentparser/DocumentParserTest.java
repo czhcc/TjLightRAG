@@ -48,7 +48,7 @@ class DocumentParserTest {
   @Test
   void rejectsUnsupportedBlankAndBinaryDocuments() {
     assertEquals("unsupported_format", assertThrows(ProcessingFailure.class,
-        () -> parser.fromText("text", "pdf")).getCode());
+        () -> parser.fromText("text", "exe")).getCode());
     assertEquals("empty_document", assertThrows(ProcessingFailure.class,
         () -> parser.fromText(" \r\n\u00A0", "text")).getCode());
     assertEquals("binary_content", assertThrows(ProcessingFailure.class,
