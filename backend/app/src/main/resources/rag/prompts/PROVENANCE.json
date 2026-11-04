@@ -6,5 +6,10 @@
   "prompt_version": "lightrag-aaebfe1-text-v1",
   "language": "English",
   "max_total_records": 100,
-  "max_entity_records": 40
+  "max_entity_records": 40,
+  "reference_note": "The limits above describe frozen upstream text-format reference templates only; they are not runtime JSON extraction limits.",
+  "runtime_prompt_version": "trs-typed-entity-json-v6",
+  "runtime_template": "extract-json-system.txt",
+  "runtime_entity_count_limit": null,
+  "runtime_relation_count_limit": null
 }

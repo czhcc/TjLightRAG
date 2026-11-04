@@ -23,7 +23,7 @@ public final class JsonExtractionStream {
   private final List<JsonNode> pendingRelations = new ArrayList<>();
   private Extraction result;
   private TokenBuffer object;
-  private int stage, depth, count, entities;
+  private int stage, depth;
   private boolean relation, entitiesComplete, ended;
   private String validationFailure, pendingSurrogate = "";
   private final Set<String> fields = new HashSet<>();
@@ -43,7 +43,7 @@ public final class JsonExtractionStream {
 
   /** Feeds UTF-8 safely even when a provider delta divides a UTF-16 surrogate pair. @author czhcc */
   public void accept(String delta) {
-    if (document.length() + delta.length() > 2_000_000) throw new ModelFailure("extraction_record_limit");
+    if (document.length() + delta.length() > 2_000_000) throw new ModelFailure("extraction_size_limit");
     if (ended) invalid();
     document.append(delta);
     String input = pendingSurrogate + delta;
@@ -67,7 +67,6 @@ public final class JsonExtractionStream {
         if (token.isStructEnd() && --depth == 0) {
           JsonNode record = JSON.readTree(object);
           object.close(); object = null;
-          if (++count > 100 || !relation && ++entities > 40) throw new ModelFailure("extraction_record_limit");
           if (relation && !entitiesComplete) pendingRelations.add(record);
           else record(record, relation);
         }
@@ -136,7 +135,7 @@ public final class JsonExtractionStream {
     var restored = new Extraction();
     for (var edge : missingEndpoints) if (endpointsExist(edge)) restored.getRelations().add(canonical(edge));
     result = normalizer.glean(result, restored);
-    missingEndpoints.clear(); bounds(); consumer.accept(result);
+    missingEndpoints.clear(); consumer.accept(result);
   }
 
   private void record(JsonNode value, boolean isRelation) {
@@ -161,7 +160,7 @@ public final class JsonExtractionStream {
           field(value, "type", 100), a.type(), b.type());
       if (endpointsExist(edge)) addition.getRelations().add(canonical(edge)); else missingEndpoints.add(edge);
     }
-    result = normalizer.glean(result, addition); bounds(); consumer.accept(result);
+    result = normalizer.glean(result, addition); consumer.accept(result);
   }
 
   private List<Extraction.Attribute> attributes(JsonNode values) {
@@ -237,9 +236,6 @@ public final class JsonExtractionStream {
     String text = normalizer.normalize(value.path(key).asText(), !key.equals("description"));
     if (text.isBlank() || text.length() > max) throw new ModelFailure("extraction_invalid_field_" + key);
     return text;
-  }
-  private void bounds() {
-    if (result.getEntities().size() > 80 || result.getEntities().size() + result.getRelations().size() > 200) throw new ModelFailure("extraction_record_limit");
   }
   private boolean reserved(String name) { return Set.of("__proto__", "prototype", "constructor").contains(name.toLowerCase(Locale.ROOT)); }
   private void invalid() { throw new ModelFailure("extraction_invalid_json"); }

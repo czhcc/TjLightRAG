@@ -9,4 +9,4 @@
 只输出一个严格 JSON 对象，先 entities 数组，后 relations 数组；不输出 Markdown、代码围栏、思考、注释、结束标记或额外解释。
 {"entities":[{"name":"长安","type":"地","description":"原文中的城市","attributes":[]},{"name":"长安","type":"网","description":"原文中的企业","attributes":[{"name":"上市","type":"boolean","value":true}]}],"relations":[{"source":{"name":"长安","type":"网"},"target":{"name":"长安","type":"地"},"type":"位于","keywords":"所在地,城市","description":"原文说明企业位于城市"}]}
 上例只是结构示例，不得将示例事实带入结果。没有内容时返回 {"entities":[],"relations":[]}。
-每轮最多 40 个实体，实体与关系合计最多 100 项。实体 name/端点 name 最多 512 字符，实体及关系 type 最多 100 字符，description 最多 16000 字符，keywords 最多 4000 字符。每个实体最多 32 项属性，属性名和属性类型最多 100 字符，单个值 JSON 最多 2000 字符。达到上限时合法关闭 JSON。禁止 __proto__、prototype、constructor 名称。
+实体和关系不设数量上限，按原文证据提取，不为凑数重复或编造；同名同类型实体合并，避免重复关系。实体 name/端点 name 最多 512 字符，实体及关系 type 最多 100 字符，description 最多 16000 字符，keywords 最多 4000 字符。每个实体最多 32 项属性，属性名和属性类型最多 100 字符，单个值 JSON 最多 2000 字符。保持 JSON 完整闭合。禁止 __proto__、prototype、constructor 名称。
