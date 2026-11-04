@@ -16,7 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 @RequiredArgsConstructor
 public class IndexService {
-  public static final String PROMPT_VERSION = "trs-typed-entity-json-v5";
+  public static final String PROMPT_VERSION = "trs-typed-entity-json-v6";
   private final JdbcTemplate jdbc;
   private final KnowledgeBaseService access;
   private final ModelConfigurationService models;

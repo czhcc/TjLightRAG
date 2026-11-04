@@ -46,7 +46,6 @@ public class ExtractionParser {
                     + Pattern.quote("<|#|>")
                     + ")",
                 "\n");
-    int rows = 0;
     for (String line : text.split("\\R")) {
       String[] p = line.strip().split(Pattern.quote("<|#|>"), -1);
       if (p.length == 4 && p[0].strip().equalsIgnoreCase("entity")) {
@@ -70,7 +69,6 @@ public class ExtractionParser {
             && !desc.isEmpty()
             && desc.length() <= 16000) {
           entities.add(new Extraction.Entity(name, type, desc));
-          rows++;
         }
       } else if (p.length == 5
           && (p[0].strip().equalsIgnoreCase("relation")
@@ -93,10 +91,8 @@ public class ExtractionParser {
             b = temp;
           }
           relations.add(new Extraction.Relation(a, b, keywords, desc, 1));
-          rows++;
         }
       }
-      if (rows > 100 || entities.size() > 40) throw new ModelFailure("extraction_record_limit");
     }
     return glean(new Extraction(), new Extraction(entities, relations));
   }
