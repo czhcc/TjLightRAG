@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ApiError, mutate, request } from "./api";
 import { queryStream } from "./queryStream";
 import MarkdownAnswer from "./MarkdownAnswer";
+import Modal from "./Modal";
 type Origin = {
   documentId: string;
   revisionId: string;
@@ -49,6 +50,9 @@ export default function QueryPanel({
   const [loadingHistory, setLoadingHistory] = useState(true), [historyPage, setHistoryPage] = useState(0);
   const [moreConversations, setMoreConversations] = useState(false), [moreTurns, setMoreTurns] = useState(false);
   const navigation = useRef<AbortController | null>(null);
+  const deletion = useRef<AbortController | null>(null);
+  const [deleting, setDeleting] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
   const log = useRef<HTMLDivElement | null>(null);
   const [question, setQuestion] = useState(""),
     [mode, setMode] = useState("mix"),
@@ -89,6 +93,8 @@ export default function QueryPanel({
     const controller = new AbortController(); navigation.current = controller;
     setConversations([]); setConversation(""); setTurns([]); setSubmitted(""); setLoadingHistory(true);
     setHistoryPage(0); setMoreConversations(false); setMoreTurns(false);
+    setDeleting("");
+    setDeleteTarget(null);
     setQuestion("");
     setAnswer("");
     setEvidence(null);
@@ -110,9 +116,33 @@ export default function QueryPanel({
     return () => {
       sequence.current++;
       controller.abort(); navigation.current?.abort();
+      deletion.current?.abort(); deletion.current = null;
       cancel();
     };
   }, [kb]);
+  async function remove(item: Conversation) {
+    setDeleteTarget(null);
+    if (deletion.current || loadingHistory) return;
+    const controller = new AbortController(); deletion.current = controller;
+    setDeleting(item.id); setError("");
+    try {
+      await mutate(`/api/knowledge-bases/${kb}/conversations/${item.id}`, undefined, "DELETE", controller.signal);
+      if (controller.signal.aborted) return;
+      setConversations(old => old.filter(existing => existing.id !== item.id));
+      if (conversation === item.id) await choose("");
+      // Deletion shifts OFFSET pages: reload page zero so the next page cannot skip a row.
+      setMoreConversations(false); setHistoryPage(0);
+      const items = await request<Conversation[]>(`/api/knowledge-bases/${kb}/conversations`, { signal: controller.signal });
+      if (!controller.signal.aborted) { setConversations(items); setMoreConversations(items.length === 50); }
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        if (e instanceof ApiError && e.status === 401) onSessionExpired();
+        else setError(t("query.deleteFailure"));
+      }
+    } finally {
+      if (deletion.current === controller) { deletion.current = null; if (!controller.signal.aborted) setDeleting(""); }
+    }
+  }
   async function choose(id: string) {
     sequence.current++; cancel(); navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
@@ -156,7 +186,7 @@ export default function QueryPanel({
   }
   async function generate(event: FormEvent, kind = "answer") {
     event.preventDefault();
-    if (busy || loadingHistory || !question.trim()) return;
+    if (busy || loadingHistory || deleting || !question.trim()) return;
     cancel();
     const controller = new AbortController(),
       id = crypto.randomUUID(),
@@ -278,14 +308,18 @@ export default function QueryPanel({
   return (
     <section className="conversation-shell">
       <aside className="conversation-sidebar">
-        <button type="button" className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium" onClick={() => void choose("")}><span aria-hidden="true">＋ </span>{t("query.newConversation")}</button>
+        <button type="button" disabled={!!deleting} className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium" onClick={() => void choose("")}><span aria-hidden="true">＋ </span>{t("query.newConversation")}</button>
         <h3 className="mt-6 mb-3 text-xs font-semibold text-slate-500">{t("query.history")}</h3>
         <nav aria-label={t("query.history")} className="conversation-history">
-          {conversations.map(item => <button key={item.id} type="button" title={item.title || t("query.newConversation")}
+          {conversations.map(item => <div key={item.id} className="conversation-history-row"><button type="button" disabled={!!deleting} title={item.title || t("query.newConversation")}
             aria-current={conversation === item.id ? "page" : undefined}
-            onClick={() => void choose(item.id)}>{item.title || t("query.newConversation")}</button>)}
+            onClick={() => void choose(item.id)}>{item.title || t("query.newConversation")}</button>
+            <button type="button" className="conversation-delete" disabled={!!deleting || loadingHistory}
+              aria-label={t("query.deleteConversation", { title: item.title || t("query.newConversation") })}
+              aria-busy={deleting === item.id}
+              onClick={event => { event.currentTarget.focus(); setDeleteTarget(item); }}>×</button></div>)}
         </nav>
-        {moreConversations && <button type="button" disabled={loadingHistory || busy} onClick={() => void older("conversations")}>{t("query.moreHistory")}</button>}
+        {moreConversations && <button type="button" disabled={loadingHistory || busy || !!deleting} onClick={() => void older("conversations")}>{t("query.moreHistory")}</button>}
       </aside>
       <div className="conversation-main">
       <header className="conversation-header flex flex-wrap items-center gap-4"><h2 className="text-lg font-semibold">{t("query.title")}</h2>
@@ -318,7 +352,7 @@ export default function QueryPanel({
       {loadingHistory && <p role="status">{t("loading")}</p>}
       <div className="conversation-stage" data-empty={empty}>
       <div ref={log} role="log" aria-label={t("query.messages")} aria-live="polite" className="conversation-messages space-y-5" hidden={empty}>
-        {moreTurns && <button type="button" disabled={loadingHistory || busy} onClick={() => void older("turns")}>{t("query.olderMessages")}</button>}
+        {moreTurns && <button type="button" disabled={loadingHistory || busy || !!deleting} onClick={() => void older("turns")}>{t("query.olderMessages")}</button>}
         {turns.map(turn => <article key={turn.id} className="space-y-3 border-b border-slate-100 pb-5">
           <p className="ml-auto w-fit max-w-1/2 whitespace-pre-wrap break-words rounded-lg bg-blue-50 p-3 text-right">{turn.question}</p>
           <p className="text-sm font-medium">{t("query.assistant")}</p>
@@ -446,7 +480,7 @@ export default function QueryPanel({
         </label>
         <div className="flex flex-wrap justify-end gap-4">
           <button
-            disabled={busy || loadingHistory}
+            disabled={busy || loadingHistory || !!deleting}
             className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40"
           >
             {busy ? t("loading") : t("query.send")}
@@ -466,7 +500,7 @@ export default function QueryPanel({
           )}
           <button
             type="button"
-            disabled={busy || loadingHistory || !question.trim()}
+            disabled={busy || loadingHistory || !!deleting || !question.trim()}
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40"
             onClick={(e) => void generate(e, "context")}
           >
@@ -474,7 +508,7 @@ export default function QueryPanel({
           </button>
           <button
             type="button"
-            disabled={busy || loadingHistory || !question.trim()}
+            disabled={busy || loadingHistory || !!deleting || !question.trim()}
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40"
             onClick={(e) => void generate(e, "prompt")}
           >
@@ -486,6 +520,13 @@ export default function QueryPanel({
       </div>
       </div>
       </div>
+      {deleteTarget && <Modal title={t("query.confirmDelete")} busy={false} close={() => setDeleteTarget(null)}>
+        <p className="break-words">{t("query.deleteConfirm", { title: deleteTarget.title || t("query.newConversation") })}</p>
+        <div className="mt-5 flex justify-end gap-3">
+          <button type="button" className="rounded-lg border border-slate-300 px-4 py-2 text-sm" onClick={() => setDeleteTarget(null)}>{t("query.cancelDelete")}</button>
+          <button type="button" className="rounded-lg bg-red-600 px-4 py-2 text-sm text-white" onClick={() => void remove(deleteTarget)}>{t("query.confirmDelete")}</button>
+        </div>
+      </Modal>}
     </section>
   );
 }
