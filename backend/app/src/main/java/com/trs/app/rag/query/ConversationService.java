@@ -54,6 +54,13 @@ public class ConversationService {
     return Map.of("id", id, "title", "");
   }
 
+  /** Deletes the caller's conversation and cascades its turns under the conversation lock. @author czhcc */
+  @Transactional
+  public void delete(UUID kb, UUID id, String actor) {
+    owned(kb, id, actor, true);
+    jdbc.update("DELETE FROM rag_conversation WHERE knowledge_base_id=? AND id=?", kb, id);
+  }
+
   /** Reads a chronological page of up to fifty turns, including explicit interrupted states. @author czhcc */
   public List<Map<String, Object>> turns(UUID kb, UUID id, String actor, Long before) {
     owned(kb, id, actor, false);

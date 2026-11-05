@@ -7,6 +7,13 @@
 .conversation-history button { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: .5rem; padding: .7rem .75rem; text-align: left; font-size: .875rem; color: #475569; }
 .conversation-history button:hover { background: #e2e8f0; }
 .conversation-history button[aria-current="page"] { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
+.conversation-history-row { display: flex; align-items: center; min-width: 0; }
+.conversation-history-row > button:first-child { flex: 1; min-width: 0; }
+.conversation-history-row > .conversation-delete { flex: 0 0 auto; width: 2rem; padding: .6rem 0; color: #b91c1c; font-size: 1.125rem; line-height: 1; text-align: center; }
+@media (hover: hover) {
+  .conversation-history-row:not(:hover):not(:focus-within) > .conversation-delete:not([aria-busy="true"]) { opacity: 0; pointer-events: none; }
+}
+.conversation-history button:disabled { cursor: default; opacity: .5; }
 .conversation-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .conversation-header { flex-shrink: 0; padding: 1rem 1.5rem; border-bottom: 1px solid #f1f5f9; }
 .conversation-stage { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -23,6 +30,7 @@
   .conversation-sidebar { max-height: 10rem; border-right: 0; border-bottom: 1px solid #e2e8f0; padding: .75rem; }
   .conversation-sidebar h3 { margin: .5rem 0; }
   .conversation-history { display: flex; gap: .25rem; overflow-x: auto; }
+  .conversation-history-row { flex: 0 0 auto; max-width: 16rem; }
   .conversation-history button { flex-shrink: 0; width: auto; max-width: 12rem; }
   .conversation-header, .conversation-messages, .conversation-composer-area { padding: 1rem; }
 }

@@ -191,6 +191,32 @@ class RetrievalIntegrationTest {
   }
 
   @Test
+  void deletingConversationIsPrivateAndCascadesTurnsWithoutAllowingLateWrites() throws Exception {
+    UUID id = (UUID) conversations.create(kb, "admin").get("id");
+    UUID request = UUID.randomUUID();
+    conversations.begin(kb, id, "admin", request, "question");
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'delete-reader',password_hash FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "delete-reader", KnowledgeRole.READER);
+    assertThrows(RagAccessException.class, () -> conversations.delete(kb, id, "delete-reader"));
+    UUID other = bases.create("admin", "delete scope", "").getId();
+    assertThrows(RagAccessException.class, () -> conversations.delete(other, id, "admin"));
+    conversations.delete(kb, id, "admin");
+    assertTrue(conversations.list(kb, "admin", 0).isEmpty());
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_conversation_turn WHERE conversation_id=?", Integer.class, id));
+    assertThrows(RagAccessException.class, () -> conversations.turns(kb, id, "admin", null));
+    var result = new QueryResult("success", "late", true, chat, null, "disabled", "disabled", null, List.of(), List.of(), List.of());
+    assertThrows(RagAccessException.class, () -> conversations.complete(kb, id, "admin", request, result));
+    assertThrows(RagAccessException.class, () -> conversations.fail(kb, id, "admin", request, "late", false));
+    UUID own = (UUID) conversations.create(kb, "delete-reader").get("id");
+    var session = login("delete-reader");
+    URI uri = URI.create("http://localhost:" + port + "/api/knowledge-bases/" + kb + "/conversations/" + own);
+    assertEquals(403, session.client().send(HttpRequest.newBuilder(uri).DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(204, session.client().send(HttpRequest.newBuilder(uri).header("X-CSRF-TOKEN", session.csrf()).DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertEquals(404, session.client().send(HttpRequest.newBuilder(uri).header("X-CSRF-TOKEN", session.csrf()).DELETE().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+    assertTrue(conversations.list(kb, "delete-reader", 0).isEmpty());
+  }
+
+  @Test
   void expiredConversationTurnCannotPublishOrBlockTheNextQuestion() {
     UUID id = (UUID) conversations.create(kb, "admin").get("id");
     UUID first = UUID.randomUUID(), second = UUID.randomUUID();
