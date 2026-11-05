@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   select, forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, drag, zoom, zoomIdentity,
-  type SimulationNodeDatum, type SimulationLinkDatum, type ZoomBehavior,
+  type Simulation, type SimulationNodeDatum, type SimulationLinkDatum, type ZoomBehavior,
 } from "d3";
 import { typeColor, type GraphNode, type GraphLink } from "./graphData";
 
@@ -11,13 +11,20 @@ type Link = Omit<GraphLink, "source" | "target"> & SimulationLinkDatum<Node>;
 const WIDTH = 1000, HEIGHT = 600;
 
 /** D3 force-directed SVG graph with zoom, node dragging and accessible expansion. */
-export default function GraphCanvas({ nodes, links, onExpand, onSelect }: {
+export default function GraphCanvas({ nodes, links, onExpand, onSelect, active = true }: {
   nodes: GraphNode[]; links: GraphLink[]; onExpand: (id: string) => void; onSelect: (id: string) => void;
+  active?: boolean;
 }) {
   const { t } = useTranslation();
   const svg = useRef<SVGSVGElement>(null);
   const positions = useRef(new Map<string, Node>());
   const behavior = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const layout = useRef<Simulation<Node, Link> | null>(null);
+  const visible = useRef(active); visible.current = active;
+  useEffect(() => {
+    // Keep the exact positions on return; a new query, expansion or drag restarts layout.
+    if (!active) layout.current?.stop();
+  }, [active]);
   useEffect(() => {
     if (!svg.current) return;
     const root = select(svg.current);
@@ -37,6 +44,8 @@ export default function GraphCanvas({ nodes, links, onExpand, onSelect }: {
       .force("charge", forceManyBody().strength(-450))
       .force("center", forceCenter(WIDTH / 2, HEIGHT / 2))
       .force("collide", forceCollide(48));
+    layout.current = simulation;
+    if (!visible.current) simulation.stop();
     const lines = viewport.append("g").selectAll<SVGGElement, Link>("g").data(edges, edge => edge.id).join("g");
     lines.append("line").attr("stroke", "#94a3b8").attr("stroke-width", 1.5);
     lines.append("text").attr("text-anchor", "middle").attr("font-size", 11).attr("fill", "#64748b")
@@ -70,7 +79,7 @@ export default function GraphCanvas({ nodes, links, onExpand, onSelect }: {
         .attr("y", edge => (((edge.source as Node).y ?? 0) + ((edge.target as Node).y ?? 0)) / 2 - 5);
     };
     simulation.on("tick", draw); draw();
-    return () => { simulation.stop(); root.on(".zoom", null); viewport.remove(); behavior.current = null; };
+    return () => { simulation.stop(); layout.current = null; root.on(".zoom", null); viewport.remove(); behavior.current = null; };
   }, [nodes, links, onExpand, onSelect, t]);
 
   function scale(factor: number) { if (svg.current && behavior.current) select(svg.current).call(behavior.current.scaleBy, factor); }

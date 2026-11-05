@@ -21,12 +21,16 @@ export default function Workspace({ onSessionExpired, admin = false }: {
 }) {
   const { t } = useTranslation();
   const [page, setPage] = useState<Feature>("query");
+  const [graphBase, setGraphBase] = useState("");
   const [bases, setBases] = useState<Base[]>([]), [selectedId, setSelectedId] = useState("");
   const [loaded, setLoaded] = useState(false), [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0), [name, setName] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const session = useRef(onSessionExpired); session.current = onSessionExpired;
   const selected = bases.find(base => base.id === selectedId);
+  useEffect(() => {
+    setGraphBase(current => page === "graph" ? selectedId : current === selectedId ? current : "");
+  }, [page, selectedId]);
   function fail(e: unknown) {
     if (e instanceof ApiError && e.status === 401) { session.current(); return; }
     setError(e instanceof ApiError && e.status === 403 ? "permissionDenied" : "requestFailed");
@@ -85,11 +89,15 @@ export default function Workspace({ onSessionExpired, admin = false }: {
           <h2 className="text-2xl font-semibold">{selected.name}</h2>
           {selected.role === "READER" && <p className="text-sm text-slate-500">{t("workspace.readOnly")}</p>}
           {page === "query" && <QueryPanel key={`query-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} />}
-          {page === "graph" && <Suspense fallback={<p role="status">{t("loading")}</p>}><GraphPanel key={`graph-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} /></Suspense>}
           {page === "objects" && <Suspense fallback={<p role="status">{t("loading")}</p>}><ObjectExplorer key={`objects-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} /></Suspense>}
           {page === "retrieval" && <RetrievalPanel key={`retrieval-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} />}
           {page === "documents" && <DocumentPanel key={`documents-${selectedId}`} kb={selectedId} canWrite={selected.role !== "READER"} onSessionExpired={onSessionExpired} />}
         </>}
+      {selected && (page === "graph" || graphBase === selectedId) && <div hidden={page !== "graph"}>
+        <Suspense fallback={<p role="status">{t("loading")}</p>}>
+          <GraphPanel key={`graph-${selectedId}`} kb={selectedId} active={page === "graph"} onSessionExpired={onSessionExpired} />
+        </Suspense>
+      </div>}
     </section>
   </div>;
 }
