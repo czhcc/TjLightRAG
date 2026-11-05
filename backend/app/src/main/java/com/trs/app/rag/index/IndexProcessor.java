@@ -67,7 +67,9 @@ public class IndexProcessor {
         var summary = models.version(lease.getSummaryVersion());
         var embedding = models.version(lease.getEmbeddingVersion());
         var contributions = processChunks(lease, extract, embedding);
-        var graph = graphs.assemble(contributions, summary, embedding, check);
+        var reuse = indexes.reusableGraph(lease);
+        var graph = reuse == null ? graphs.assemble(contributions, summary, embedding, check)
+            : graphs.assemble(contributions, summary, embedding, check, reuse);
         check.run();
         indexes.complete(lease, graph);
       } catch (RuntimeException failure) {

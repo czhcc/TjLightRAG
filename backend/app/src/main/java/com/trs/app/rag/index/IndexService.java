@@ -7,7 +7,11 @@ import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -21,6 +25,7 @@ public class IndexService {
   private final KnowledgeBaseService access;
   private final ModelConfigurationService models;
   private final RagTokenizer tokenizer;
+  private final PlatformTransactionManager transactionManager;
   private final JsonMapper json = JsonMapper.builder().build();
 
   private void owner(UUID kb, String actor) {
@@ -452,78 +457,277 @@ public class IndexService {
   }
 
   /**
-   * Publishes the complete graph and its vectors as ready, leaving the active pointer
-   * unchanged. @author agent
+   * Loads reusable outputs only from a complete generation in exactly the same model space. @author
+   * czhcc
    */
   @Transactional
-  public void complete(IndexLease l, GraphAssembler.Graph graph) {
-    lock(l);
-    if (!Boolean.TRUE.equals(
-        jdbc.queryForObject(
-            "SELECT NOT EXISTS(SELECT 1 FROM rag_index_chunk WHERE knowledge_base_id=? AND"
-                + " generation_id=? AND (NOT completed OR extraction IS NULL))",
-            Boolean.class,
-            l.getKnowledgeBaseId(),
-            l.getId()))) throw new ModelFailure("index_incomplete");
-    jdbc.update(
-        "DELETE FROM rag_index_relation WHERE knowledge_base_id=? AND generation_id=?",
-        l.getKnowledgeBaseId(),
-        l.getId());
-    jdbc.update(
-        "DELETE FROM rag_index_entity WHERE knowledge_base_id=? AND generation_id=?",
-        l.getKnowledgeBaseId(),
-        l.getId());
-    for (var e : graph.getEntities()) {
-      jdbc.update(
-          "INSERT INTO"
-              + " rag_index_entity(knowledge_base_id,generation_id,id,name,entity_type,description,source_ids,attributes)"
-              + " VALUES (?,?,?,?,?,?,?::JSONB,?::JSONB)",
-          l.getKnowledgeBaseId(),
-          l.getId(),
-          e.getId(),
-          e.getName(),
-          e.getType(),
-          e.getDescription(),
-          json.writeValueAsString(e.getSources()),
-          json.writeValueAsString(EntityIdentity.attributes(e.getAttributes())));
-      putVector("entity", l, e.getId(), e.getVector());
-    }
-    for (var r : graph.getRelations()) {
-      jdbc.update(
-          "INSERT INTO"
-              + " rag_index_relation(knowledge_base_id,generation_id,id,source_id,target_id,description,keywords,weight,source_ids,relation_types)"
-              + " VALUES (?,?,?,?,?,?,?,?,?::JSONB,?::JSONB)",
-          l.getKnowledgeBaseId(),
-          l.getId(),
-          r.getId(),
-          r.getSource(),
-          r.getTarget(),
-          r.getDescription(),
-          r.getKeywords(),
-          r.getWeight(),
-          json.writeValueAsString(r.getSources()),
-          json.writeValueAsString(r.getTypes()));
-      putVector("relation", l, r.getId(), r.getVector());
-    }
-    integrity(l.getKnowledgeBaseId(), l.getId());
+  public GraphAssembler.Reuse reusableGraph(IndexLease l) {
     check(l);
-    jdbc.update(
-        "UPDATE rag_index_generation SET"
-            + " state='ready',completed_at=CLOCK_TIMESTAMP(),lease_token=NULL,lease_until=NULL,error_code=NULL,retry_at=NULL"
-            + " WHERE knowledge_base_id=? AND id=?",
+    var sources =
+        jdbc.queryForList(
+            "SELECT source.id FROM rag_knowledge_base b JOIN rag_index_generation target ON"
+                + " target.knowledge_base_id=b.id AND target.id=? JOIN rag_index_generation source"
+                + " ON source.knowledge_base_id=b.id AND source.id=COALESCE(b.active_generation_id,"
+                + " (SELECT expected_generation_id FROM rag_document_index_queue WHERE"
+                + " knowledge_base_id=b.id)) WHERE b.id=? AND "
+                + compatibleGraphSource(),
+            UUID.class,
+            l.getId(),
+            l.getKnowledgeBaseId());
+    if (sources.isEmpty()) return null;
+    UUID source = sources.getFirst();
+    return new GraphAssembler.Reuse(
+        source, cachedObjects(l, source, "entity"), cachedObjects(l, source, "relation"));
+  }
+
+  private String compatibleGraphSource() {
+    return "source.state='ready' AND source.extract_version=target.extract_version AND"
+               + " source.summary_version=target.summary_version AND"
+               + " source.embedding_version=target.embedding_version AND"
+               + " source.dimensions=target.dimensions AND"
+               + " source.prompt_version=target.prompt_version AND"
+               + " source.tokenizer=target.tokenizer AND source.gleaning=target.gleaning";
+  }
+
+  private Map<UUID, GraphAssembler.Cached> cachedObjects(IndexLease l, UUID source, String kind) {
+    Map<UUID, GraphAssembler.Cached> result = new HashMap<>();
+    jdbc.query(
+        "SELECT n.id,n.contribution_hash,n.description FROM rag_index_"
+            + kind
+            + " n"
+            + " JOIN rag_index_"
+            + kind
+            + "_vector v ON v.knowledge_base_id=n.knowledge_base_id AND"
+            + " v.generation_id=n.generation_id AND v.object_id=n.id WHERE n.knowledge_base_id=?"
+            + " AND n.generation_id=? AND n.contribution_hash IS NOT NULL AND v.dimensions=?",
+        (org.springframework.jdbc.core.RowCallbackHandler)
+            rs ->
+                result.put(
+                    rs.getObject("id", UUID.class),
+                    new GraphAssembler.Cached(
+                        rs.getString("contribution_hash"), rs.getString("description"))),
         l.getKnowledgeBaseId(),
-        l.getId());
+        source,
+        l.getDimensions());
+    return result;
+  }
+
+  /**
+   * Stages bounded batches under live fencing, then marks only the complete generation
+   * ready. @author czhcc
+   */
+  @Transactional(propagation = Propagation.NEVER)
+  public void complete(IndexLease l, GraphAssembler.Graph graph) {
+    graphTransaction(
+        l,
+        () -> {
+          if (!Boolean.TRUE.equals(
+              jdbc.queryForObject(
+                  "SELECT NOT EXISTS(SELECT 1 FROM rag_index_chunk WHERE knowledge_base_id=? AND"
+                      + " generation_id=? AND (NOT completed OR extraction IS NULL))",
+                  Boolean.class,
+                  l.getKnowledgeBaseId(),
+                  l.getId()))) throw new ModelFailure("index_incomplete");
+          jdbc.update(
+              "DELETE FROM rag_index_relation WHERE knowledge_base_id=? AND generation_id=?",
+              l.getKnowledgeBaseId(),
+              l.getId());
+          jdbc.update(
+              "DELETE FROM rag_index_entity WHERE knowledge_base_id=? AND generation_id=?",
+              l.getKnowledgeBaseId(),
+              l.getId());
+          if (graph.getReuseGeneration() != null
+              && !Boolean.TRUE.equals(
+                  jdbc.queryForObject(
+                      "SELECT EXISTS(SELECT 1 FROM rag_index_generation target JOIN"
+                          + " rag_index_generation source ON"
+                          + " source.knowledge_base_id=target.knowledge_base_id WHERE"
+                          + " target.knowledge_base_id=? AND target.id=? AND source.id=? AND "
+                          + compatibleGraphSource()
+                          + ")",
+                      Boolean.class,
+                      l.getKnowledgeBaseId(),
+                      l.getId(),
+                      graph.getReuseGeneration())))
+            throw new ModelFailure("index_document_scope_incompatible");
+        });
+    batches(
+        l,
+        graph.getEntities(),
+        batch -> {
+          var copied =
+              batch.stream()
+                  .filter(e -> graph.getReusedEntities().contains(e.getId()))
+                  .map(GraphAssembler.Node::getId)
+                  .toList();
+          copyGraphObjects(l, graph.getReuseGeneration(), "entity", copied);
+          var changed =
+              batch.stream().filter(e -> !graph.getReusedEntities().contains(e.getId())).toList();
+          jdbc.batchUpdate(
+              "INSERT INTO"
+                  + " rag_index_entity(knowledge_base_id,generation_id,id,name,entity_type,description,source_ids,attributes,contribution_hash)"
+                  + " VALUES (?,?,?,?,?,?,?::JSONB,?::JSONB,?)",
+              changed,
+              64,
+              (ps, e) -> {
+                ps.setObject(1, l.getKnowledgeBaseId());
+                ps.setObject(2, l.getId());
+                ps.setObject(3, e.getId());
+                ps.setString(4, e.getName());
+                ps.setString(5, e.getType());
+                ps.setString(6, e.getDescription());
+                ps.setString(7, json.writeValueAsString(e.getSources()));
+                ps.setString(
+                    8, json.writeValueAsString(EntityIdentity.attributes(e.getAttributes())));
+                ps.setString(9, e.getContributionHash());
+              });
+          batchVectors(
+              "entity", l, changed.stream().map(e -> Map.entry(e.getId(), e.getVector())).toList());
+        });
+    batches(
+        l,
+        graph.getRelations(),
+        batch -> {
+          var copied =
+              batch.stream()
+                  .filter(r -> graph.getReusedRelations().contains(r.getId()))
+                  .map(GraphAssembler.Edge::getId)
+                  .toList();
+          copyGraphObjects(l, graph.getReuseGeneration(), "relation", copied);
+          var changed =
+              batch.stream().filter(r -> !graph.getReusedRelations().contains(r.getId())).toList();
+          jdbc.batchUpdate(
+              "INSERT INTO"
+                  + " rag_index_relation(knowledge_base_id,generation_id,id,source_id,target_id,description,keywords,weight,source_ids,relation_types,contribution_hash)"
+                  + " VALUES (?,?,?,?,?,?,?,?,?::JSONB,?::JSONB,?)",
+              changed,
+              64,
+              (ps, r) -> {
+                ps.setObject(1, l.getKnowledgeBaseId());
+                ps.setObject(2, l.getId());
+                ps.setObject(3, r.getId());
+                ps.setObject(4, r.getSource());
+                ps.setObject(5, r.getTarget());
+                ps.setString(6, r.getDescription());
+                ps.setString(7, r.getKeywords());
+                ps.setDouble(8, r.getWeight());
+                ps.setString(9, json.writeValueAsString(r.getSources()));
+                ps.setString(10, json.writeValueAsString(r.getTypes()));
+                ps.setString(11, r.getContributionHash());
+              });
+          batchVectors(
+              "relation",
+              l,
+              changed.stream().map(r -> Map.entry(r.getId(), r.getVector())).toList());
+        });
+    graphTransaction(
+        l,
+        () -> {
+          integrity(l.getKnowledgeBaseId(), l.getId());
+          check(l);
+          int published =
+              jdbc.update(
+                  "UPDATE rag_index_generation SET"
+                      + " state='ready',completed_at=CLOCK_TIMESTAMP(),lease_token=NULL,lease_until=NULL,error_code=NULL,retry_at=NULL"
+                      + " WHERE knowledge_base_id=? AND id=? AND state='building' AND lease_token=?"
+                      + " AND lease_until>CLOCK_TIMESTAMP() AND NOT cancel_requested",
+                  l.getKnowledgeBaseId(),
+                  l.getId(),
+                  l.getToken());
+          if (published != 1) throw new ModelFailure("index_lease_lost");
+        });
+  }
+
+  private void graphTransaction(IndexLease l, Runnable action) {
+    var transaction = new TransactionTemplate(transactionManager);
+    transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    transaction.executeWithoutResult(
+        status -> {
+          lock(l);
+          if (!heartbeat(l)) throw new ModelFailure("index_lease_lost");
+          action.run();
+          // The final batch clears the token on success; all staging batches must still be live.
+          if (!Boolean.TRUE.equals(
+              jdbc.queryForObject(
+                  "SELECT state='ready' FROM rag_index_generation WHERE knowledge_base_id=? AND"
+                      + " id=?",
+                  Boolean.class,
+                  l.getKnowledgeBaseId(),
+                  l.getId()))) {
+            check(l);
+            if (!heartbeat(l)) throw new ModelFailure("index_lease_lost");
+          }
+        });
+  }
+
+  private <T> void batches(
+      IndexLease l, List<T> objects, java.util.function.Consumer<List<T>> write) {
+    for (int offset = 0; offset < objects.size(); offset += 64) {
+      var batch = objects.subList(offset, Math.min(offset + 64, objects.size()));
+      graphTransaction(l, () -> write.accept(batch));
+    }
+  }
+
+  private void copyGraphObjects(IndexLease l, UUID source, String kind, List<UUID> ids) {
+    if (ids.isEmpty()) return;
+    String fields =
+        kind.equals("entity")
+            ? "id,name,entity_type,description,source_ids,attributes,contribution_hash"
+            : "id,source_id,target_id,description,keywords,weight,source_ids,relation_types,contribution_hash";
+    var args = new ArrayList<Object>(List.of(l.getId(), l.getKnowledgeBaseId(), source));
+    args.addAll(ids);
+    String filter =
+        " WHERE knowledge_base_id=? AND generation_id=? AND id IN ("
+            + String.join(",", Collections.nCopies(ids.size(), "?"))
+            + ")";
+    int copied =
+        jdbc.update(
+            "INSERT INTO rag_index_"
+                + kind
+                + "(knowledge_base_id,generation_id,"
+                + fields
+                + ")"
+                + " SELECT knowledge_base_id,?,"
+                + fields
+                + " FROM rag_index_"
+                + kind
+                + filter,
+            args.toArray());
+    if (copied != ids.size()) throw new ModelFailure("index_incomplete");
+    copied =
+        jdbc.update(
+            "INSERT INTO rag_index_"
+                + kind
+                + "_vector(knowledge_base_id,generation_id,object_id,dimensions,embedding)"
+                + " SELECT knowledge_base_id,?,object_id,dimensions,embedding FROM rag_index_"
+                + kind
+                + "_vector"
+                + filter.replace(" AND id IN", " AND object_id IN"),
+            args.toArray());
+    if (copied != ids.size()) throw new ModelFailure("index_incomplete");
+  }
+
+  private void batchVectors(String kind, IndexLease l, List<Map.Entry<UUID, float[]>> vectors) {
+    jdbc.batchUpdate(
+        "INSERT INTO rag_index_"
+            + kind
+            + "_vector(knowledge_base_id,generation_id,object_id,dimensions,embedding)"
+            + " VALUES (?,?,?,?,?::public.vector)",
+        vectors,
+        64,
+        (ps, v) -> {
+          validateVector(l, v.getValue());
+          ps.setObject(1, l.getKnowledgeBaseId());
+          ps.setObject(2, l.getId());
+          ps.setObject(3, v.getKey());
+          ps.setInt(4, l.getDimensions());
+          ps.setString(5, Arrays.toString(v.getValue()));
+        });
   }
 
   private void putVector(String kind, IndexLease l, UUID object, float[] values) {
-    if (!Set.of("chunk", "entity", "relation").contains(kind) || values.length != l.getDimensions())
-      throw new ModelFailure("embedding_dimension_mismatch");
-    double norm = 0;
-    for (float f : values) {
-      if (!Float.isFinite(f)) throw new ModelFailure("embedding_invalid");
-      norm += (double) f * f;
-    }
-    if (norm == 0) throw new ModelFailure("embedding_invalid");
+    if (!Set.of("chunk", "entity", "relation").contains(kind)) throw new IllegalArgumentException();
+    validateVector(l, values);
     jdbc.update(
         "INSERT INTO rag_index_"
             + kind
@@ -535,6 +739,17 @@ public class IndexService {
         object,
         l.getDimensions(),
         Arrays.toString(values));
+  }
+
+  private void validateVector(IndexLease l, float[] values) {
+    if (values == null || values.length != l.getDimensions())
+      throw new ModelFailure("embedding_dimension_mismatch");
+    double norm = 0;
+    for (float f : values) {
+      if (!Float.isFinite(f)) throw new ModelFailure("embedding_invalid");
+      norm += (double) f * f;
+    }
+    if (norm == 0) throw new ModelFailure("embedding_invalid");
   }
 
   private void integrity(UUID kb, UUID id) {

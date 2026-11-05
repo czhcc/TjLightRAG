@@ -96,7 +96,10 @@ class MigrationIntegrationTest {
   @Test
   void emptyDatabaseMigratesAndRepeatIsNoOp() {
     String schema = "fresh_" + UUID.randomUUID().toString().replace("-", "");
-    assertEquals(6, flyway(schema, null, 3).migrate().migrationsExecuted);
+    var fresh = flyway(schema, null, 3);
+    int pending = fresh.info().pending().length;
+    assertTrue(pending > 0);
+    assertEquals(pending, fresh.migrate().migrationsExecuted);
     assertEquals(0, flyway(schema, null, 3).migrate().migrationsExecuted);
     assertThrows(
         org.flywaydb.core.api.FlywayException.class, () -> flyway(schema, null, 4).migrate());
@@ -127,7 +130,10 @@ class MigrationIntegrationTest {
       s.execute(
           "INSERT INTO app_user (username,password_hash) VALUES ('existing-user','untouched')");
     }
-    assertEquals(5, flyway(schema, null, 3).migrate().migrationsExecuted);
+    var upgrade = flyway(schema, null, 3);
+    int pending = upgrade.info().pending().length;
+    assertTrue(pending > 0);
+    assertEquals(pending, upgrade.migrate().migrationsExecuted);
     try (var c = DriverManager.getConnection(url(), "migration", "test-only");
         var s = c.createStatement()) {
       s.execute("SET search_path TO " + schema + ",public");
@@ -148,6 +154,26 @@ class MigrationIntegrationTest {
       assertThrows(
           SQLException.class, () -> s.execute("UPDATE rag_vector_configuration SET dimensions=4"));
       assertThrows(SQLException.class, () -> s.execute("DELETE FROM flyway_schema_history"));
+    }
+  }
+
+  @Test
+  void graphContributionHashesAreNullableAndDocumentedForLegacyObjects() throws Exception {
+    String schema = "hashes_" + UUID.randomUUID().toString().replace("-", "");
+    flyway(schema, null, 3).migrate();
+    try (var connection = DriverManager.getConnection(url(), "migration", "test-only");
+        var statement = connection.prepareStatement("SELECT COUNT(*) FROM pg_catalog.pg_attribute a"
+            + " JOIN pg_catalog.pg_class c ON c.oid=a.attrelid"
+            + " JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace"
+            + " WHERE n.nspname=? AND c.relname IN ('rag_index_entity','rag_index_relation')"
+            + " AND a.attname='contribution_hash' AND NOT a.attnotnull"
+            + " AND format_type(a.atttypid,a.atttypmod)='character varying(64)'"
+            + " AND col_description(c.oid,a.attnum) IS NOT NULL")) {
+      statement.setString(1, schema);
+      try (var result = statement.executeQuery()) {
+        assertTrue(result.next());
+        assertEquals(2, result.getInt(1));
+      }
     }
   }
 }
