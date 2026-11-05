@@ -3,6 +3,8 @@ package com.trs.app.rag.index;
 import com.trs.app.rag.ingestion.RagTokenizer;
 import com.trs.app.rag.model.*;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import lombok.*;
 import org.springframework.stereotype.Component;
@@ -18,9 +20,33 @@ public class GraphAssembler {
 
   /** Final graph publication batch; vectors remain separated by collection. @author agent */
   @Value
+  @AllArgsConstructor
   public static class Graph {
     List<Node> entities;
     List<Edge> relations;
+    UUID reuseGeneration;
+    Set<UUID> reusedEntities;
+    Set<UUID> reusedRelations;
+
+    /** Creates a graph without a reusable source generation. @author czhcc */
+    public Graph(List<Node> entities, List<Edge> relations) {
+      this(entities, relations, null, Set.of(), Set.of());
+    }
+  }
+
+  /** Published model output identified by its complete raw contribution digest. @author czhcc */
+  @Value
+  public static class Cached {
+    String contributionHash;
+    String description;
+  }
+
+  /** Compatible, immutable published generation; vectors are copied inside PostgreSQL. @author czhcc */
+  @Value
+  public static class Reuse {
+    UUID generation;
+    Map<UUID, Cached> entities;
+    Map<UUID, Cached> relations;
   }
 
   /** Merged node including unabridged source IDs. @author agent */
@@ -32,6 +58,7 @@ public class GraphAssembler {
     private List<UUID> sources;
     private float[] vector;
     private List<Extraction.Attribute> attributes = new ArrayList<>();
+    private String contributionHash;
   }
 
   /** Merged undirected edge with one weight contribution per shared chunk. @author agent */
@@ -44,6 +71,7 @@ public class GraphAssembler {
     private List<UUID> sources;
     private float[] vector;
     private List<String> types = new ArrayList<>();
+    private String contributionHash;
   }
 
   private static class NodeParts {
@@ -69,6 +97,14 @@ public class GraphAssembler {
       ModelVersion summary,
       ModelVersion embedding,
       Runnable check) {
+    return assemble(contributions, summary, embedding, check, null);
+  }
+
+  /** Recomputes only objects whose raw facts, attributes or source blocks changed. @author czhcc */
+  public Graph assemble(
+      Map<UUID, Extraction> contributions, ModelVersion summary, ModelVersion embedding,
+      Runnable check, Reuse reuse) {
+    Set<UUID> reusedEntities = new HashSet<>(), reusedRelations = new HashSet<>();
     Map<String, NodeParts> nodes = new TreeMap<>();
     Map<List<String>, EdgeParts> edges = new LinkedHashMap<>();
     for (var chunk : contributions.entrySet()) {
@@ -115,10 +151,18 @@ public class GraphAssembler {
         for (var edge : edges.entrySet())
           if (edge.getKey().contains(e.getKey())) desc.addAll(edge.getValue().descriptions);
       }
-      n.setDescription(describe("entity", n.getName() + " (" + n.getType() + ")", new ArrayList<>(desc), summary, check));
       n.setSources(new ArrayList<>(e.getValue().sources));
       n.setAttributes(e.getValue().attributes);
-      n.setVector(gateway.embed(embedding, n.getName() + "\n" + n.getType() + "\n" + n.getDescription()));
+      n.setContributionHash(digest(List.of(e.getKey(), new TreeSet<>(desc),
+          EntityIdentity.attributes(n.getAttributes()), new TreeSet<>(n.getSources()))));
+      Cached previous = reuse == null ? null : reuse.getEntities().get(n.getId());
+      if (previous != null && n.getContributionHash().equals(previous.getContributionHash())) {
+        n.setDescription(previous.getDescription());
+        reusedEntities.add(n.getId());
+      } else {
+        n.setDescription(describe("entity", n.getName() + " (" + n.getType() + ")", new ArrayList<>(desc), summary, check));
+        n.setVector(gateway.embed(embedding, n.getName() + "\n" + n.getType() + "\n" + n.getDescription()));
+      }
       check.run();
       resultNodes.add(n);
     }
@@ -136,25 +180,43 @@ public class GraphAssembler {
       }
       r.setSource(a);
       r.setTarget(b);
-      r.setDescription(
+      r.setContributionHash(digest(List.of(e.getKey(), new TreeSet<>(e.getValue().descriptions),
+          new TreeSet<>(e.getValue().keywords), e.getValue().types, new TreeSet<>(e.getValue().sources))));
+      Cached previous = reuse == null ? null : reuse.getRelations().get(r.getId());
+      if (previous != null && r.getContributionHash().equals(previous.getContributionHash())) {
+        r.setDescription(previous.getDescription());
+        reusedRelations.add(r.getId());
+      } else {
+        r.setDescription(
           describe(
               "relationship",
               nodes.get(src).name + " (" + nodes.get(src).type + ")~" + nodes.get(tgt).name + " (" + nodes.get(tgt).type + ")",
               new ArrayList<>(e.getValue().descriptions),
               summary,
               check));
+      }
       r.setKeywords(String.join(",", e.getValue().keywords.stream().sorted().toList()));
       r.setTypes(new ArrayList<>(e.getValue().types));
       r.setSources(new ArrayList<>(e.getValue().sources));
       r.setWeight(r.getSources().size());
-      r.setVector(
+      if (!reusedRelations.contains(r.getId())) r.setVector(
           gateway.embed(
               embedding, r.getKeywords() + "\t" + nodes.get(src).name + " (" + nodes.get(src).type + ")\n"
                   + nodes.get(tgt).name + " (" + nodes.get(tgt).type + ")\n" + r.getDescription()));
       check.run();
       resultEdges.add(r);
     }
-    return new Graph(resultNodes, resultEdges);
+    return new Graph(resultNodes, resultEdges, reuse == null ? null : reuse.getGeneration(),
+        Set.copyOf(reusedEntities), Set.copyOf(reusedRelations));
+  }
+
+  private String digest(Object facts) {
+    try {
+      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+          .digest(json.writeValueAsString(facts).getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 unavailable", impossible);
+    }
   }
 
   private String endpoint(Map<String, NodeParts> nodes, String name, String type) {

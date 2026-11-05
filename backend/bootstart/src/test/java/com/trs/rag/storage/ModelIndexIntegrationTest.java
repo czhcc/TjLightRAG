@@ -287,6 +287,123 @@ class ModelIndexIntegrationTest {
   }
 
   @Test
+  void emptyPublishedBaselineCanStageAndPublishWithoutModelCalls() {
+    bind("embed3");
+    ingest();
+    UUID next = id(indexes.create(kb, "admin"));
+    var lease = indexes.claim().orElseThrow();
+    assertNull(indexes.reusableGraph(lease));
+    for (var chunk : indexes.chunks(lease))
+      indexes.checkpoint(lease, (UUID) chunk.get("chunk_id"), new Extraction(), new float[] {1, 0, 0});
+    indexes.complete(lease, new GraphAssembler.Graph(List.of(), List.of()));
+    assertEquals("ready", state(next));
+  }
+
+  @Test
+  void rowRunCopiesUnchangedGraphAndDeleteRecomputesSharedContributions() {
+    bind("embed3");
+    var a = documents.acceptText(kb, "admin", "incremental-a.txt", "Alice researches graphs.", "text", 64, 16);
+    var b = documents.acceptText(kb, "admin", "incremental-b.txt", "Bob researches networks.", "text", 64, 16);
+    ingestion.process(jobs.claim("incremental-test").orElseThrow());
+    ingestion.process(jobs.claim("incremental-test").orElseThrow());
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    UUID original = jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb);
+    int calls = embeddingCalls.get(), extracts = extractionCalls.get();
+    workflow.action(kb, b.getDocumentId(), "admin", "run");
+    advanceDocuments();
+    UUID next = automaticGeneration();
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(next));
+    assertEquals(calls, embeddingCalls.get(), "Unchanged objects must not call the vector model");
+    assertEquals(extracts, extractionCalls.get());
+    assertEquals(original, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity n JOIN rag_index_entity old"
+        + " ON old.knowledge_base_id=n.knowledge_base_id AND old.id=n.id AND old.generation_id=?"
+        + " JOIN rag_index_entity_vector v ON v.knowledge_base_id=n.knowledge_base_id AND v.generation_id=n.generation_id AND v.object_id=n.id"
+        + " JOIN rag_index_entity_vector ov ON ov.knowledge_base_id=old.knowledge_base_id AND ov.generation_id=old.generation_id AND ov.object_id=old.id"
+        + " WHERE n.generation_id=? AND n.contribution_hash=old.contribution_hash AND n.description=old.description AND v.embedding=ov.embedding",
+        Integer.class, original, next));
+    advanceDocuments();
+    workflow.action(kb, b.getDocumentId(), "admin", "rebuild");
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    assertEquals(calls + 1, embeddingCalls.get(), "Same extraction only recomputes the selected chunk vector");
+    advanceDocuments();
+    calls = embeddingCalls.get();
+    workflow.action(kb, b.getDocumentId(), "admin", "delete");
+    advanceDocuments();
+    UUID remaining = automaticGeneration();
+    assertTrue(indexer.runOnce());
+    assertEquals(calls + 3, embeddingCalls.get(), "Shared nodes and relationship lose the deleted source");
+    assertEquals(1.0, jdbc.queryForObject("SELECT weight FROM rag_index_relation WHERE generation_id=?", Double.class, remaining));
+    advanceDocuments();
+    assertEquals("indexed", documents.get(kb, "admin", a.getDocumentId()).getStatus());
+  }
+
+  @Test
+  void addingDocumentWithDifferentEntitiesReusesPublishedObjects() {
+    bind("embed3");
+    documents.acceptText(kb, "admin", "existing.txt", "Alice and Bob work together.", "text", 64, 16);
+    ingestion.process(jobs.claim("incremental-test").orElseThrow());
+    advanceDocuments();
+    assertTrue(indexer.runOnce());
+    advanceDocuments();
+    int before = embeddingCalls.get();
+    typedEntities.set(true);
+    var added = documents.acceptText(kb, "admin", "new.txt", "长安公司位于长安。", "text", 64, 16);
+    ingestion.process(jobs.claim("incremental-test").orElseThrow());
+    workflow.action(kb, added.getDocumentId(), "admin", "run");
+    advanceDocuments();
+    UUID next = automaticGeneration();
+    assertTrue(indexer.runOnce());
+    assertEquals("ready", state(next));
+    assertEquals(before + 4, embeddingCalls.get(), "Only new chunk, two new entities and new relationship");
+    assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=?", Integer.class, next));
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_relation WHERE generation_id=?", Integer.class, next));
+  }
+
+  @Test
+  void stagedBatchesStayUnpublishedAndRetryFencesOldWriterAndClearsPartialGraph() {
+    bind("embed3");
+    ingest();
+    UUID active = id(indexes.create(kb, "admin"));
+    assertTrue(indexer.runOnce());
+    indexes.activate(kb, active, null, "admin");
+    UUID next = id(indexes.create(kb, "admin"));
+    var lease = indexes.claim().orElseThrow();
+    UUID chunk = (UUID) indexes.chunks(lease).getFirst().get("chunk_id");
+    indexes.checkpoint(lease, chunk, new Extraction(), new float[] {1, 0, 0});
+    var nodes = new ArrayList<GraphAssembler.Node>();
+    for (int i = 0; i < 65; i++) {
+      var node = new GraphAssembler.Node();
+      node.setId(EntityIdentity.id("node-" + i, "物"));
+      node.setName("node-" + i); node.setType("物"); node.setDescription("fact");
+      node.setSources(List.of(chunk)); node.setVector(new float[] {1, 0, 0});
+      nodes.add(node);
+    }
+    nodes.getLast().setVector(new float[] {1, 0});
+    var graph = new GraphAssembler.Graph(nodes, List.of());
+    assertEquals("embedding_dimension_mismatch", assertThrows(ModelFailure.class,
+        () -> indexes.complete(lease, graph)).getCode());
+    assertEquals(64, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=?", Integer.class, next));
+    assertEquals("building", state(next));
+    assertEquals(active, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+    indexes.cancel(kb, next, "admin");
+    assertEquals("index_lease_lost", assertThrows(ModelFailure.class, () -> indexes.complete(lease, graph)).getCode());
+    indexes.fail(lease, "index_cancelled");
+    indexes.retry(kb, next, "admin");
+    var replacement = indexes.claim().orElseThrow();
+    nodes.getLast().setVector(new float[] {1, 0, 0});
+    indexes.complete(replacement, graph);
+    assertEquals("ready", state(next));
+    assertEquals(65, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity WHERE generation_id=?", Integer.class, next));
+    assertEquals(65, jdbc.queryForObject("SELECT COUNT(*) FROM rag_index_entity_vector WHERE generation_id=?", Integer.class, next));
+    assertEquals(active, jdbc.queryForObject("SELECT active_generation_id FROM rag_knowledge_base WHERE id=?", UUID.class, kb));
+  }
+
+  @Test
   void rowRunDoesNotSilentlyRebuildOtherDocumentsAfterModelChange() {
     bind("embed3");
     var a = documents.acceptText(kb, "admin", "version-a.txt", "Alice researches graphs.", "text", 64, 16);
