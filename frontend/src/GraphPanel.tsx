@@ -5,7 +5,7 @@ import GraphCanvas from "./GraphCanvas";
 import { mergeGraph, typeColor, type GraphSlice } from "./graphData";
 
 /** Knowledge-base graph search and one-hop expansion, isolated from model inference. */
-export default function GraphPanel({ kb, onSessionExpired }: { kb: string; onSessionExpired: () => void }) {
+export default function GraphPanel({ kb, onSessionExpired, active = true }: { kb: string; onSessionExpired: () => void; active?: boolean }) {
   const { t } = useTranslation();
   const [types, setTypes] = useState<string[]>([]), [type, setType] = useState(""), [name, setName] = useState("");
   const [graph, setGraph] = useState<GraphSlice | null>(null), [selected, setSelected] = useState("");
@@ -83,7 +83,7 @@ export default function GraphPanel({ kb, onSessionExpired }: { kb: string; onSes
       <span className="h-3 w-3 rounded-full" style={{ background: typeColor(item) }} />{item}</span>)}</div>
     {!graph && !busy && !error && <p className="text-sm text-slate-500">{t("graph.start")}</p>}
     {graph && !graph.nodes.length && <p className="text-sm text-slate-500">{t("graph.empty")}</p>}
-    <GraphCanvas nodes={graph?.nodes ?? EMPTY_NODES} links={graph?.links ?? EMPTY_LINKS} onExpand={expand} onSelect={select} />
+    <GraphCanvas nodes={graph?.nodes ?? EMPTY_NODES} links={graph?.links ?? EMPTY_LINKS} onExpand={expand} onSelect={select} active={active} />
     {node && <section className="space-y-3 rounded-lg bg-slate-50 p-4" aria-label={t("graph.details")}>
       <h3 className="font-semibold">{node.name} <span className="text-sm font-normal text-slate-500">{node.type}</span></h3>
       <p className="whitespace-pre-wrap break-words text-sm">{node.description}</p>
