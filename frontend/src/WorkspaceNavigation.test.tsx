@@ -6,6 +6,7 @@ import i18n from "./i18n";
 vi.mock("./QueryPanel", () => ({ default: ({ kb }: { kb: string }) => <h2>问答内容 {kb}</h2> }));
 vi.mock("./RetrievalPanel", () => ({ default: () => <h2>检索内容</h2> }));
 vi.mock("./GraphPanel", () => ({ default: ({ kb }: { kb: string }) => <h2>图谱内容 {kb}</h2> }));
+vi.mock("./ObjectExplorer", () => ({ default: ({ kb }: { kb: string }) => <h2>对象内容 {kb}</h2> }));
 vi.mock("./IndexPanel", () => ({ default: () => <h2>索引内容</h2> }));
 vi.mock("./Models", () => ({ default: () => <h2>模型内容</h2> }));
 
@@ -64,12 +65,12 @@ it("shows graph viewing immediately below knowledge-base chat", async () => {
   const fetch = mockApi();
   render(<Workspace admin onSessionExpired={() => {}} />);
   const nav = within(await screen.findByRole("navigation", { name: "功能菜单" }));
-  const labels = ["知识库问答", "图谱查看", "检索证据", "文档管理", "模型配置"];
+  const labels = ["知识库问答", "图谱查看", "对象探索", "检索证据", "文档管理", "模型配置"];
   expect(nav.getAllByRole("button").map(button => button.textContent)).toEqual(labels);
   expect(screen.getByRole("heading", { name: "问答内容 kb1" })).toBeTruthy();
   expect(screen.queryByLabelText("文档名称")).toBeNull();
   expect(fetch.mock.calls.some(([url]) => url.includes("/documents") || url.includes("/jobs"))).toBe(false);
-  for (const [label, heading] of [["图谱查看", "图谱内容 kb1"], ["检索证据", "检索内容"], ["文档管理", "文档"], ["模型配置", "模型内容"]]) {
+  for (const [label, heading] of [["图谱查看", "图谱内容 kb1"], ["对象探索", "对象内容 kb1"], ["检索证据", "检索内容"], ["文档管理", "文档"], ["模型配置", "模型内容"]]) {
     fireEvent.click(nav.getByRole("button", { name: label }));
     await screen.findByRole("heading", { name: heading });
     expect(nav.getByRole("button", { name: label }).getAttribute("aria-current")).toBe("page");
