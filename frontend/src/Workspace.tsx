@@ -8,8 +8,9 @@ import { ApiError, mutate, request } from "./api";
 
 type Base = { id: string; name: string; description: string; role: "OWNER" | "WRITER" | "READER" };
 const GraphPanel = lazy(() => import("./GraphPanel"));
+const ObjectExplorer = lazy(() => import("./ObjectExplorer"));
 const features = [
-  ["query", "query.title"], ["graph", "graph.title"], ["retrieval", "retrieval.title"],
+  ["query", "query.title"], ["graph", "graph.title"], ["objects", "explorer.title"], ["retrieval", "retrieval.title"],
   ["documents", "navigation.documents"], ["models", "models.title"],
 ] as const;
 type Feature = (typeof features)[number][0];
@@ -85,6 +86,7 @@ export default function Workspace({ onSessionExpired, admin = false }: {
           {selected.role === "READER" && <p className="text-sm text-slate-500">{t("workspace.readOnly")}</p>}
           {page === "query" && <QueryPanel key={`query-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} />}
           {page === "graph" && <Suspense fallback={<p role="status">{t("loading")}</p>}><GraphPanel key={`graph-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} /></Suspense>}
+          {page === "objects" && <Suspense fallback={<p role="status">{t("loading")}</p>}><ObjectExplorer key={`objects-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} /></Suspense>}
           {page === "retrieval" && <RetrievalPanel key={`retrieval-${selectedId}`} kb={selectedId} onSessionExpired={onSessionExpired} />}
           {page === "documents" && <DocumentPanel key={`documents-${selectedId}`} kb={selectedId} canWrite={selected.role !== "READER"} onSessionExpired={onSessionExpired} />}
         </>}

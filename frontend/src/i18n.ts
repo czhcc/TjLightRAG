@@ -19,6 +19,16 @@ const resources = {
         documents: "文档管理",
         jobs: "任务管理",
       },
+      explorer: {
+        title: "对象探索", hint: "浏览已发布索引中的对象；左侧数量为各类型的全部对象数，名称过滤只影响右侧列表。刷新可加载最新索引。",
+        types: "对象类型", all: "全部", typeCount: "{{type}}（{{count}}）", name: "对象名称", type: "类型",
+        list: "对象列表", operations: "操作", details: "详情", detailTitle: "对象详情", search: "查询", refresh: "刷新",
+        page: "第 {{page}} 页，共 {{total}} 条", previous: "上一页", next: "下一页", size: "每页条数",
+        attributes: "对象属性", attributeName: "属性名称", attributeType: "属性类型", attributeValue: "属性值",
+        texts: "关联文本", related: "关联对象", source: "{{name}} · 文本块 {{order}}", close: "关闭", retry: "重试",
+        empty: "没有找到匹配的对象。", noAttributes: "暂无属性。", noTexts: "暂无关联文本。", noRelated: "暂无关联对象。",
+        failure: "对象加载失败，请检查权限与连接后重试。", unavailable: "对象或索引已不可用，请关闭详情并刷新列表。",
+      },
       graph: {
         title: "图谱查看", hint: "按实体类型、名称查询；双击节点或选中后按 Enter 展开关联节点。可拖动节点、拖动画布及滚轮缩放。",
         type: "实体类型", name: "实体名称", allTypes: "全部类型", nameHint: "输入名称，支持部分匹配", search: "查询",
@@ -354,6 +364,16 @@ const resources = {
         features: "Features",
         documents: "Document management",
         jobs: "Task management",
+      },
+      explorer: {
+        title: "Object explorer", hint: "Browse objects in the published index. Type counts include all objects; name filters affect the list only. Refresh to load the latest index.",
+        types: "Object types", all: "All", typeCount: "{{type}} ({{count}})", name: "Object name", type: "Type",
+        list: "Object list", operations: "Actions", details: "Details", detailTitle: "Object details", search: "Search", refresh: "Refresh",
+        page: "Page {{page}}, {{total}} items", previous: "Previous", next: "Next", size: "Items per page",
+        attributes: "Object attributes", attributeName: "Attribute name", attributeType: "Attribute type", attributeValue: "Value",
+        texts: "Related texts", related: "Related objects", source: "{{name}} · Chunk {{order}}", close: "Close", retry: "Retry",
+        empty: "No matching objects.", noAttributes: "No attributes.", noTexts: "No related texts.", noRelated: "No related objects.",
+        failure: "Unable to load objects. Check access and connection, then retry.", unavailable: "This object or index is unavailable. Close details and refresh the list.",
       },
       graph: {
         title: "Graph viewer", hint: "Search by entity type or name. Double-click a node or focus it and press Enter to expand neighbors. Drag nodes or the canvas; scroll to zoom.",

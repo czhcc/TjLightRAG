@@ -70,6 +70,7 @@ class RetrievalIntegrationTest {
   @Autowired QueryStreams streams;
   @Autowired RetrievalService retrieval;
   @Autowired GraphService graph;
+  @Autowired com.trs.app.rag.explorer.ObjectExplorerService objects;
   @Autowired RetrievalRepository repository;
   @Autowired ModelConfigurationService models;
   @Autowired KnowledgeBaseService bases;
@@ -99,6 +100,70 @@ class RetrievalIntegrationTest {
   List<tools.jackson.databind.JsonNode> rewriteMessages = new CopyOnWriteArrayList<>();
   List<tools.jackson.databind.JsonNode> answerMessages = new CopyOnWriteArrayList<>();
   volatile CountDownLatch entered, release;
+
+  @Test
+  void objectExplorerCountsFiltersPagesAndKeepsDetailsInTheCapturedGeneration() throws Exception {
+    assertEquals("retrieval_no_active_index", assertThrows(RetrievalFailure.class,
+        () -> objects.list(kb, "admin", null, "", "", 0, 20)).getCode());
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin");
+    insertNode(gen, uuid("place-alice"), "Alice", "place", "same name, different type", List.of(c(0)));
+    jdbc.update("UPDATE rag_index_entity SET attributes=?::JSONB WHERE generation_id=? AND id=?",
+        "{\"年龄\":[{\"type\":\"number\",\"value\":30}]}", gen, uuid("Alice"));
+    var all = objects.list(kb, "admin", null, "", "", 0, 2);
+    assertEquals(4, all.getAllCount()); assertEquals(4, all.getObjects().getTotal());
+    assertEquals(2, all.getObjects().getItems().size());
+    assertEquals(4, all.getTypes().stream().mapToLong(t -> t.getCount()).sum());
+    assertEquals(2, objects.list(kb, "admin", gen, "", "ALI", 0, 20).getObjects().getTotal());
+    assertEquals(1, objects.list(kb, "admin", gen, "person", "ALI", 0, 20).getObjects().getTotal());
+    assertEquals(0, objects.list(kb, "admin", gen, "", "%", 0, 20).getObjects().getTotal());
+    assertEquals(2, objects.list(kb, "admin", gen, "", "", 1, 2).getObjects().getItems().size());
+    var detail = objects.detail(kb, "admin", gen, uuid("Alice"), 0, 0);
+    assertTrue(detail.getEntity().getAttributes().containsKey("年龄"));
+    assertEquals(1, detail.getTexts().getTotal());
+    assertEquals("Alice uses LightRAG.", detail.getTexts().getItems().getFirst().getContent());
+    assertFalse(detail.getTexts().getItems().getFirst().getSourceName().isBlank());
+    assertEquals("LightRAG", detail.getRelated().getItems().getFirst().getEntity().getName());
+    assertEquals(1, detail.getRelated().getTotal());
+    UUID next = seed(3, "next-"); indexes.activate(kb, next, gen, "admin");
+    assertEquals(gen, objects.detail(kb, "admin", gen, uuid("Alice"), 0, 0).getGenerationId());
+    assertEquals(gen, objects.list(kb, "admin", gen, "", "", 0, 20).getGenerationId());
+    assertThrows(RagAccessException.class, () -> objects.detail(kb, "admin", next, uuid("Alice"), 0, 0));
+    UUID other = bases.create("admin", "object scope", "").getId();
+    assertThrows(RagAccessException.class, () -> objects.list(other, "admin", gen, "", "", 0, 20));
+    assertThrows(IllegalArgumentException.class, () -> objects.list(kb, "admin", gen, "", "", -1, 20));
+    assertThrows(IllegalArgumentException.class, () -> objects.list(kb, "admin", gen, "", "", 0, 101));
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'objects-reader',password_hash FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    assertThrows(RagAccessException.class, () -> objects.list(kb, "objects-reader", gen, "", "", 0, 20));
+    bases.grant(kb, "admin", "objects-reader", KnowledgeRole.READER);
+    var session = login("objects-reader");
+    var response = session.client().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+        + "/api/knowledge-bases/" + kb + "/objects?generationId=" + gen + "&name=Alice")).GET().build(), HttpResponse.BodyHandlers.ofString());
+    assertEquals(200, response.statusCode());
+    assertEquals(2, json.readTree(response.body()).path("objects").path("total").asInt());
+  }
+
+  @Test
+  void objectExplorerPagesRelatedObjectsAndKeepsEachSharedTextDocumentOccurrence() {
+    ingest("second-copy.txt", "Alice uses LightRAG.");
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin");
+    for (int i = 0; i < 22; i++) {
+      UUID id = uuid("neighbor-" + i);
+      insertNode(gen, id, "Neighbor " + i, "person", "neighbor", List.of(c(0)));
+      insertEdge(gen, uuid("neighbor-edge-" + i), uuid("Alice"), id, "related", "related", 1, List.of(c(0)));
+    }
+    var first = objects.detail(kb, "admin", gen, uuid("Alice"), 0, 0);
+    assertEquals(2, first.getTexts().getTotal());
+    assertEquals(2, first.getTexts().getItems().stream().map(t -> t.getDocumentId()).distinct().count());
+    assertTrue(first.getTexts().getItems().stream().allMatch(t -> t.getContent().equals("Alice uses LightRAG.")));
+    assertEquals(23, first.getRelated().getTotal());
+    assertEquals(20, first.getRelated().getItems().size());
+    var second = objects.detail(kb, "admin", gen, uuid("Alice"), 0, 1);
+    assertEquals(3, second.getRelated().getItems().size());
+    var ids = new HashSet<UUID>();
+    first.getRelated().getItems().forEach(r -> ids.add(r.getEntity().getId()));
+    assertTrue(second.getRelated().getItems().stream().noneMatch(r -> ids.contains(r.getEntity().getId())));
+    assertTrue(objects.detail(kb, "admin", gen, uuid("Alice"), 1, 0).getTexts().getItems().isEmpty());
+  }
 
   @Test
   void graphSearchAndExpansionAreTypedLiteralBoundedAndGenerationScoped() throws Exception {
