@@ -23,6 +23,7 @@ class QueryServiceTest {
     final RagTokenizer tokenizer = mock(RagTokenizer.class);
     final KnowledgeBaseService access = mock(KnowledgeBaseService.class);
     final ContextPlanner planner = mock(ContextPlanner.class);
+    final AnswerAgent agent = mock(AnswerAgent.class);
     QueryService service;
     QueryRequest request;
 
@@ -45,9 +46,22 @@ class QueryServiceTest {
                         10,
                         Map.of("chat_template_kwargs", Map.of("enable_thinking", false))));
         when(planner.systemPrompt(anyString())).thenAnswer(i -> "system:" + i.getArgument(0));
-        service = new QueryService(retrieval, repository, models, gateway, tokenizer, planner, access, 2, 180);
+        service = new QueryService(retrieval, repository, models, gateway, tokenizer, planner, access, 2, 180, agent);
         request = new QueryRequest();
         request.setQuery("问题🙂");
+    }
+
+    @Test
+    void nativeAgentDispatchUsesTheApplicationContractAndPreservesHistoryAndEvents() {
+        when(agent.enabled()).thenReturn(true);
+        var history = List.of(Map.of("role", "user", "content", "previous question"));
+        java.util.function.BiConsumer<String, Object> events = (name, value) -> {};
+        var result = mock(QueryResult.class);
+        when(agent.answer(kb, "admin", request, history, events)).thenReturn(result);
+
+        assertSame(result, service.stream(kb, "admin", request, history, events));
+        verify(agent).answer(kb, "admin", request, history, events);
+        verifyNoInteractions(retrieval, repository, gateway, access);
     }
 
     Result evidence(String status) {

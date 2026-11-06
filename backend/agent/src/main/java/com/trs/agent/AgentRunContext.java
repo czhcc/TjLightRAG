@@ -1,4 +1,4 @@
-package com.trs.app.rag.agent;
+package com.trs.agent;
 
 import com.trs.app.rag.model.ModelVersion;
 import com.trs.app.rag.query.QueryRequest;

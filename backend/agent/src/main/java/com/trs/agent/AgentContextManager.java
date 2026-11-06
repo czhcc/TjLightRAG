@@ -1,4 +1,4 @@
-package com.trs.app.rag.agent;
+package com.trs.agent;
 
 import com.trs.app.rag.ingestion.RagTokenizer;
 import com.trs.app.rag.retrieval.RetrievalFailure;

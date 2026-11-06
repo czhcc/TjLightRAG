@@ -6,7 +6,7 @@
 - 实现功能前先编写测试：后端 junit-jupiter，前端 Vitest + jsdom。
 - JavaBean 对象使用 Lombok 注解，减少手写 getter/setter。
 - Java 类和公共方法必须提供注释，包含 @author，值为生成代码时的系统用户名。
-- 包名前缀 com.trs，JDK 21，Maven 多模块：common、document-parser → app → bootstart；document-parser 独立负责文档解析，不依赖 app 或 bootstart。
+- 包名前缀 com.trs，JDK 21，Maven 多模块：app 依赖 common 和 document-parser，agent 依赖 app，bootstart 依赖 app 和 agent；document-parser 独立负责文档解析，不依赖 app 或 bootstart。app 通过业务接口调用智能体，不反向依赖 agent。
 - SQL 关键字大写，表和字段名小写；PostgreSQL 迁移必须有表和字段 COMMENT。
 - Flyway 已执行迁移不可修改；新增版本迁移。
 - 不记录密码、会话、CSRF 令牌等敏感信息，日志使用 SLF4J。
@@ -28,13 +28,14 @@
 
 - Java 21
 - Spring Boot、Spring AI
-- Maven 多模块：`backend/common`、`backend/document-parser`、`backend/app`、`backend/bootstart`
+- Maven 多模块：`backend/common`、`backend/document-parser`、`backend/app`、`backend/agent`、`backend/bootstart`
 - Lombok
 - Spring Data JPA、PostgreSQL、pgvector、Flyway
 - 前端：`frontend`，使用 React、TypeScript、Vite、pnpm、Vitest 和 jsdom
 
 服务端父 POM 为 `backend/pom.xml`，仓库根目录不是 Maven 工程目录。依赖和插件版本以各 POM 及前端锁文件为准。
 `document-parser` 独立负责文档解析，不依赖 `app` 或 `bootstart`；主要 Spring Boot 集成测试位于 `backend/bootstart/src/test/java`。
+`agent` 的实现包为 `com.trs.agent`，负责 ReAct、工具、上下文管理和调用跟踪，智能体单元测试位于该模块；问答调用与跟踪终态契约在 `app` 中定义，`bootstart` 组装实现。不得通过让 `app` 依赖 `agent` 引入循环依赖。
 
 所有新增代码必须兼容项目实际使用的依赖版本。
 
@@ -221,7 +222,7 @@
 
 ### 7.1 作用范围
 
-Java 格式规范适用于服务端四个 Maven 子模块的生产和测试源码，不适用于前端、SQL 或 Markdown。
+Java 格式规范适用于服务端五个 Maven 子模块的生产和测试源码，不适用于前端、SQL 或 Markdown。
 
 - 日常任务只对受影响模块执行格式化，检查实际差异，避免夹带无关格式变更。
 - 当前父 POM 同时包含 `src/main/java/**/*.java`、`src/test/java/**/*.java` 及带 `**/` 前缀的递归规则。
@@ -247,7 +248,7 @@ mvn -f backend/pom.xml -pl app,bootstart spotless:apply
 mvn -f backend/pom.xml -pl app,bootstart spotless:check
 ```
 
-`-pl` 可选值为 `common`、`document-parser`、`app`、`bootstart`。也可以进入对应子模块目录执行 `mvn spotless:apply`、`mvn spotless:check`。
+`-pl` 可选值为 `common`、`document-parser`、`app`、`agent`、`bootstart`。也可以进入对应子模块目录执行 `mvn spotless:apply`、`mvn spotless:check`。
 日常格式化命令不加 `-am`，避免把依赖模块及父工程也纳入执行；Spotless 直接处理源码，无需先构建依赖模块。
 
 只有任务明确包含全服务端格式基线调整时，才执行全量格式化：

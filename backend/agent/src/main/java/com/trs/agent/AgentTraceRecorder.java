@@ -1,6 +1,7 @@
-package com.trs.app.rag.agent;
+package com.trs.agent;
 
 import com.trs.app.rag.*;
+import com.trs.app.rag.query.ConversationTraceLifecycle;
 import com.trs.app.rag.query.QueryRequest;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
@@ -15,7 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 /** Bounded, ordered asynchronous trace writes; capture failures never replace answer results. @author czhcc */
 @Service
 @RequiredArgsConstructor
-public class AgentTraceRecorder {
+public class AgentTraceRecorder implements ConversationTraceLifecycle {
     private final JdbcTemplate jdbc;
     private final KnowledgeBaseService access;
     private final TraceProtection protection;

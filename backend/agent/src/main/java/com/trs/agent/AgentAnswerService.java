@@ -1,4 +1,4 @@
-package com.trs.app.rag.agent;
+package com.trs.agent;
 
 import com.trs.app.rag.ingestion.RagTokenizer;
 import com.trs.app.rag.model.*;
@@ -22,7 +22,7 @@ import tools.jackson.databind.json.JsonMapper;
 /** Application-controlled native-tool ReAct, followed by one tool-free real answer stream. @author czhcc */
 @Service
 @RequiredArgsConstructor
-public class AgentAnswerService {
+public class AgentAnswerService implements AnswerAgent {
     private final RetrievalRepository repository;
     private final ModelConfigurationService models;
     private final ModelGateway gateway;

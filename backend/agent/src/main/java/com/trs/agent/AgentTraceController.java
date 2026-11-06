@@ -1,4 +1,4 @@
-package com.trs.app.rag.agent;
+package com.trs.agent;
 
 import jakarta.servlet.http.HttpServletResponse;
 import java.security.Principal;

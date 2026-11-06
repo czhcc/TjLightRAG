@@ -14,7 +14,8 @@ class ConversationQueriesTest {
     void failedStreamPersistsPartialTextWithoutCompletingTheTurn() {
         var service = mock(QueryService.class);
         var store = mock(ConversationService.class);
-        var queries = new ConversationQueries(service, store);
+        var traces = mock(ConversationTraceLifecycle.class);
+        var queries = new ConversationQueries(service, store, traces);
         UUID kb = UUID.randomUUID(), conversation = UUID.randomUUID(), id = UUID.randomUUID();
         var request = new QueryRequest();
         request.setQuery("question");
@@ -29,6 +30,30 @@ class ConversationQueriesTest {
         });
         assertThrows(ModelFailure.class, () -> queries.stream(kb, "user", request, (event, value) -> {}));
         verify(store).fail(kb, conversation, "user", id, "partial", false);
+        verify(traces).terminal(kb, conversation, id, "user", "failed");
         verify(store, never()).complete(any(), any(), anyString(), any(), any());
+    }
+
+    @Test
+    void traceCompletionFollowsSuccessfulTurnPersistenceThroughTheApplicationContract() {
+        var service = mock(QueryService.class);
+        var store = mock(ConversationService.class);
+        var traces = mock(ConversationTraceLifecycle.class);
+        var queries = new ConversationQueries(service, store, traces);
+        UUID kb = UUID.randomUUID(), conversation = UUID.randomUUID(), id = UUID.randomUUID();
+        var request = new QueryRequest();
+        request.setQuery("question");
+        request.setConversationId(conversation);
+        request.setRequestId(id);
+        var history = List.of(Map.of("role", "user", "content", "previous question"));
+        when(store.begin(kb, conversation, "user", id, "question"))
+                .thenReturn(new ConversationService.Turn(id, history));
+        var result = mock(QueryResult.class);
+        when(service.query(kb, "user", request, history)).thenReturn(result);
+
+        assertSame(result, queries.query(kb, "user", request));
+        var order = inOrder(store, traces);
+        order.verify(store).complete(kb, conversation, "user", id, result);
+        order.verify(traces).terminal(kb, conversation, id, "user", "success");
     }
 }

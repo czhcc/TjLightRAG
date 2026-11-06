@@ -1,8 +1,7 @@
-package com.trs.rag.query;
+package com.trs.agent;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.trs.app.rag.agent.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 

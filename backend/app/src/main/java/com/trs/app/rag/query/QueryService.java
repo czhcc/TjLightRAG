@@ -16,12 +16,7 @@ import org.springframework.stereotype.Service;
 /** History-aware retrieval and answers with no answer-cache reads or writes. @author czhcc */
 @Service
 public class QueryService {
-    private com.trs.app.rag.agent.AgentAnswerService agent;
-    /** Connects the agent while retaining the standalone preview pipeline. @author czhcc */
-    @org.springframework.beans.factory.annotation.Autowired
-    public void agent(com.trs.app.rag.agent.AgentAnswerService agent) {
-        this.agent = agent;
-    }
+    private final AnswerAgent agent;
 
     private static final String HISTORY_INSTRUCTION =
             "\nConversation history is provided only to understand the current question. Earlier answers are not evidence."
@@ -46,7 +41,8 @@ public class QueryService {
             ContextPlanner planner,
             KnowledgeBaseService access,
             @Value("${rag.query.max-concurrency:4}") int concurrency,
-            @Value("${rag.query.timeout-seconds:180}") int timeout) {
+            @Value("${rag.query.timeout-seconds:180}") int timeout,
+            AnswerAgent agent) {
         if (concurrency < 1 || concurrency > 16 || timeout < 1 || timeout > 300) throw new IllegalArgumentException();
         this.retrieval = retrieval;
         this.repository = repository;
@@ -55,6 +51,7 @@ public class QueryService {
         this.tokenizer = tokenizer;
         this.planner = planner;
         this.access = access;
+        this.agent = java.util.Objects.requireNonNull(agent);
         this.slots = new Semaphore(concurrency);
         this.timeout = timeout;
     }
@@ -93,7 +90,7 @@ public class QueryService {
             QueryRequest request,
             List<Map<String, String>> history,
             BiConsumer<String, Object> events) {
-        if (agent != null && agent.enabled() && request != null && "answer".equals(request.getPreview()))
+        if (agent.enabled() && request != null && "answer".equals(request.getPreview()))
             return agent.answer(kb, actor, request, history, events);
         if (!slots.tryAcquire()) throw new RetrievalFailure("query_busy", 429);
         long deadline = System.nanoTime() + timeout * 1000000000L;

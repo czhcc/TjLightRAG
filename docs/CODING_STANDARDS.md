@@ -2,7 +2,7 @@
 
 ## Java
 
-JDK 21；包名 com.trs。common 放通用类型，document-parser 放独立文档解析及其结果/来源结构，不依赖 Spring、数据库或 app；app 放业务与持久化，通过配置类注册解析器，bootstart 负责启动和配置。app 依赖 common 与 document-parser，bootstart 依赖 app。
+JDK 21；包名 com.trs。common 放通用类型，document-parser 放独立文档解析及其结果/来源结构，不依赖 Spring、数据库或 app；app 放业务与持久化，通过配置类注册解析器；agent 的 com.trs.agent 包负责 ReAct、工具、上下文及调用跟踪，bootstart 负责启动和配置。app 依赖 common 与 document-parser，agent 依赖 app，bootstart 依赖 app 和 agent。app 中的 AnswerAgent、ConversationTraceLifecycle 定义业务契约，禁止 app 反向依赖 agent 实现。智能体单元测试随实现放在 agent，Spring Boot 跨模块集成测试保留在 bootstart。
 实体使用 Lombok Getter/Setter/NoArgsConstructor，避免 Data 自动输出密码字段。
 所有类和公共方法增加 Javadoc，author 使用当前系统用户名。
 REST 通过会话认证，写请求验证 CSRF，密码只存 BCrypt 摘要。日志使用 SLF4J，不输出凭据。
