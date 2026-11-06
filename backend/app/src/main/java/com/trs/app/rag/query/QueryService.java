@@ -16,6 +16,10 @@ import org.springframework.stereotype.Service;
 /** History-aware retrieval and answers with no answer-cache reads or writes. @author czhcc */
 @Service
 public class QueryService {
+  private com.trs.app.rag.agent.AgentAnswerService agent;
+  /** Connects the agent while retaining the standalone preview pipeline. @author czhcc */
+  @org.springframework.beans.factory.annotation.Autowired
+  public void agent(com.trs.app.rag.agent.AgentAnswerService agent) { this.agent = agent; }
   private static final String HISTORY_INSTRUCTION = "\nConversation history is provided only to understand the current question. Earlier answers are not evidence."
       + " Use the current retrieved evidence for facts and citations; old citation numbers do not identify current sources.";
   private final RetrievalService retrieval;
@@ -79,6 +83,8 @@ public class QueryService {
 
   private QueryResult execute(
       UUID kb, String actor, QueryRequest request, List<Map<String, String>> history, BiConsumer<String, Object> events) {
+    if (agent != null && agent.enabled() && request != null && "answer".equals(request.getPreview()))
+      return agent.answer(kb, actor, request, history, events);
     if (!slots.tryAcquire()) throw new RetrievalFailure("query_busy", 429);
     long deadline = System.nanoTime() + timeout * 1000000000L;
     try {

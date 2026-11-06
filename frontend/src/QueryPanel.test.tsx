@@ -68,6 +68,30 @@ function stream(events: [string, unknown][]) {
     },
   });
 }
+it("opens a previous local turn using its real request ID and shows statistics without missing-chunk warnings", async () => {
+  const ids: string[] = [];
+  const statEvidence = { ...evidence, chunks: [], references: [], metadata: { statistics: [{ tool: "aggregate_objects", arguments: {}, result: { total: "9007199254740993" } }] } };
+  vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith("/csrf")) return { ok: true, status: 200, json: async () => ({ token: "t" }) };
+    if (url.endsWith("/conversations")) return { ok: true, status: 200, json: async () => options?.method === "POST" ? { id: "c", title: "" } : [] };
+    if (url.includes("/trace")) { expect(url).toContain(`/turns/${ids[0]}/trace`); return { ok: true, status: 200, json: async () => ({ status: "success", availability: "available", spans: [] }) }; }
+    ids.push(JSON.parse(options!.body as string).requestId);
+    return { ok: true, status: 200, headers: new Headers({ "Content-Type": "text/event-stream" }), body: stream([
+      ["references", statEvidence], ["delta", { text: "统计回答" }], ["done", { status: "success", retrieval: statEvidence }],
+    ]) };
+  }));
+  render(<QueryPanel kb="kb1" onSessionExpired={() => {}} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "发送" }).hasAttribute("disabled")).toBe(false));
+  for (const question of ["第一个问题", "第二个问题"]) {
+    fireEvent.change(screen.getByLabelText("问答问题"), { target: { value: question } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" }).hasAttribute("disabled")).toBe(false));
+  }
+  expect(screen.getAllByText("9007199254740993")).toHaveLength(2);
+  expect(screen.queryByText(/本轮没有可展示的召回文本块/)).toBeNull();
+  fireEvent.click(screen.getAllByRole("button", { name: "查看" })[0]);
+  await screen.findByRole("dialog", { name: "智能体调用过程" });
+});
 it("aligns composer actions to the right", () => {
   stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => [] }));
   render(<QueryPanel kb="kb1" onSessionExpired={() => {}} />);
@@ -228,7 +252,31 @@ it.each(["answer", "context"])("shows a specific token budget error for %s", asy
   expect((await screen.findByRole("alert")).textContent).toContain("问答 token 预算不足");
   expect(screen.queryByText("回答已完成")).toBeNull();
 });
-it("explicitly cancels and aborts the fetch, and clears drafts on knowledge-base switch", async () => {
+  it("does not label a missing native tool response as model incompatibility", async () => {
+    stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/csrf")
+      ? { ok: true, status: 200, json: async () => ({ token: "t" }) }
+      : { ok: true, status: 200, headers: new Headers({ "Content-Type": "text/event-stream" }),
+          body: stream([["error", { error: "query_agent_native_tools_missing" }]]) }));
+    render(<QueryPanel kb="kb" onSessionExpired={() => {}} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText("问答问题"), { target: { value: "问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("本轮未取得原生工具调用");
+    expect(screen.queryByText("回答已完成")).toBeNull();
+  });
+  it("explains repeated tool calls without suggesting a larger question budget", async () => {
+    stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/csrf")
+      ? { ok: true, status: 200, json: async () => ({ token: "t" }) }
+      : { ok: true, status: 200, headers: new Headers({ "Content-Type": "text/event-stream" }),
+          body: stream([["error", { error: "query_agent_no_progress" }]]) }));
+    render(<QueryPanel kb="kb" onSessionExpired={() => {}} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText("问答问题"), { target: { value: "问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("模型重复调用工具且未取得有效回答证据");
+    expect(screen.queryByText("回答已完成")).toBeNull();
+  });
+  it("explicitly cancels and aborts the fetch, and clears drafts on knowledge-base switch", async () => {
   let signal: AbortSignal | undefined;
   const fetch = vi.fn(async (url: string, options?: RequestInit) => {
     if (url.endsWith("/csrf"))

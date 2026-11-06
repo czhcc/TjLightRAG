@@ -15,6 +15,42 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /** Credential authentication, redirect prevention and bounded transport tests. @author agent */
 class ModelTransportTest {
+  @Test void nativeToolProbeRequiresARealToolCall() throws Exception {
+    var supported = new java.util.concurrent.atomic.AtomicBoolean(true);
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      String body = new String(exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+      assertTrue(body.contains("connection_probe"));
+      assertEquals("required", tools.jackson.databind.json.JsonMapper.builder().build().readTree(body).path("tool_choice").asText());
+      String response = supported.get()
+          ? "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"p\",\"type\":\"function\",\"function\":{\"name\":\"connection_probe\",\"arguments\":\"{}\"}}]}}]}"
+          : "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"OK\"}}]}";
+      byte[] bytes = OpenAiFixtures.json(response).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("Content-Type", "application/json"); exchange.sendResponseHeaders(200, bytes.length); exchange.getResponseBody().write(bytes); exchange.close();
+    }); server.start();
+    try {
+      var model = new ModelVersion(UUID.randomUUID(), UUID.randomUUID(), "CHAT", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "probe", "", 0, 16000, 100, 3);
+      var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), mock(RagTokenizer.class));
+      assertTrue(gateway.supportsTools(model)); supported.set(false); assertFalse(gateway.supportsTools(model));
+    } finally { server.stop(0); }
+  }
+  @Test void nativeDecisionsPreserveRequiredAndAutoToolChoice() throws Exception {
+    var choices = new java.util.concurrent.CopyOnWriteArrayList<String>();
+    var mapper = tools.jackson.databind.json.JsonMapper.builder().build();
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      var body = mapper.readTree(exchange.getRequestBody().readAllBytes()); choices.add(body.path("tool_choice").asText());
+      assertFalse(body.path("chat_template_kwargs").path("enable_thinking").asBoolean(true));
+      byte[] bytes = OpenAiFixtures.json("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"OK\"}}]}").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("Content-Type", "application/json"); exchange.sendResponseHeaders(200, bytes.length); exchange.getResponseBody().write(bytes); exchange.close();
+    }); server.start();
+    try {
+      var model = new ModelVersion(UUID.randomUUID(), UUID.randomUUID(), "CHAT", "http://127.0.0.1:" + server.getAddress().getPort() + "/v1", "native", "", 0, 16000, 100, 3, Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
+      var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), mock(RagTokenizer.class));
+      for (String choice : List.of("required", "auto")) gateway.decide(model, new org.springframework.ai.chat.prompt.Prompt("question", org.springframework.ai.openai.OpenAiChatOptions.builder().toolChoice(choice).build()));
+      assertEquals(List.of("required", "auto"), choices);
+    } finally { server.stop(0); }
+  }
   @Test
   void textAndEmbeddingFactoriesUseOfficialSpringAiImplementations() {
     var gateway = new ModelGateway(new SecretVault(""), new EndpointPolicy(), mock(RagTokenizer.class));

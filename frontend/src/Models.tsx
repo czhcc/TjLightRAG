@@ -107,8 +107,9 @@ export default function Models({ kb, kbName, admin = true, canBind = false, onSe
     await execute(async signal => {
       setProbes(old => ({ ...old, [id]: t("models.testing") }));
       try {
-        const out = await mutate<{ elapsedMs: number }>(`/api/admin/models/${id}/test`, undefined, "POST", signal);
-        if (!signal.aborted) setProbes(old => ({ ...old, [id]: t("models.testOk", { ms: out.elapsedMs }) }));
+        const out = await mutate<{ elapsedMs: number; toolCallingSupported?: boolean }>(`/api/admin/models/${id}/test`, undefined, "POST", signal);
+        if (!signal.aborted) setProbes(old => ({ ...old, [id]: t("models.testOk", { ms: out.elapsedMs })
+          + (out.toolCallingSupported === undefined ? "" : " · " + t(out.toolCallingSupported ? "agentTrace.toolsSupported" : "agentTrace.toolsUnsupported")) }));
       } catch (e) { if (!signal.aborted) setProbes(old => ({ ...old, [id]: t("models.testFailed") })); throw e; }
     });
   }

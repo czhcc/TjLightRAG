@@ -30,6 +30,13 @@ logging:
     org.springframework.ai.chat.model.MessageAggregator: "OFF"
 
 rag:
+  agent:
+    enabled: true
+    max-decisions: 8
+    max-tool-calls: 12
+    context:
+      trigger-percent: 65
+      target-percent: 50
   models:
     master-key: ${RAG_MODEL_MASTER_KEY:}
   retrieval:

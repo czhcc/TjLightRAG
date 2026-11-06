@@ -67,6 +67,43 @@ public class ModelGateway {
   /** Uses the official client's streaming implementation. @author czhcc */
   public OpenAiChatModel streamingChatModel(ModelVersion version) { return chatModel(version); }
 
+  /** Executes exactly one native tool decision; the application owns the ReAct loop. @author czhcc */
+  public ChatResponse decide(ModelVersion version, Prompt prompt) {
+    return guarded(() -> {
+      if (!(prompt.getOptions() instanceof org.springframework.ai.model.tool.ToolCallingChatOptions tools)) throw new IllegalArgumentException();
+      // Runtime OpenAI option defaults must not erase configured extension parameters.
+      var options = OpenAiChatOptions.builder().model(version.getModel()).maxTokens(version.getMaxOutputTokens()).temperature(0.0)
+          .extraBody(extraBody(version)).timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0)
+          .toolChoice(prompt.getOptions() instanceof OpenAiChatOptions nativeOptions ? nativeOptions.getToolChoice() : null)
+          .toolCallbacks(tools.getToolCallbacks()).parallelToolCalls(false).replayReasoningContent(false).build();
+      ChatResponse response = chatModel(version).call(new Prompt(prompt.getInstructions(), options));
+      if (response == null || response.getResults().size() != 1) throw new ModelFailure("model_invalid_response");
+      String finish = response.getResult().getMetadata().getFinishReason();
+      if (!("stop".equalsIgnoreCase(finish) || "tool_calls".equalsIgnoreCase(finish))) throw new ModelFailure("model_incomplete");
+      return response;
+    });
+  }
+
+  /** Verifies native tool-call output with an inert probe; printed JSON does not count. @author czhcc */
+  public boolean supportsTools(ModelVersion version) {
+    org.springframework.ai.tool.ToolCallback probe = new org.springframework.ai.tool.ToolCallback() {
+      @Override public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+        return new org.springframework.ai.tool.definition.DefaultToolDefinition("connection_probe", "Call this inert tool to verify native tool support.", "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}");
+      }
+      @Override public String call(String input) { throw new IllegalStateException("Probe execution is disabled"); }
+    };
+    try {
+      for (int attempt = 0; attempt < 2; attempt++) {
+        var response = decide(version, new Prompt(List.of(new UserMessage("Call connection_probe exactly once with empty arguments. Do not reply with text.")),
+            OpenAiChatOptions.builder().toolCallbacks(probe).toolChoice("required").build()));
+        if (!response.hasToolCalls() || response.getResult().getOutput().getToolCalls().size() != 1) continue;
+        var call = response.getResult().getOutput().getToolCalls().getFirst();
+        if (call.name().equals("connection_probe") && json.readTree(call.arguments()).isObject() && json.readTree(call.arguments()).isEmpty()) return true;
+      }
+      return false;
+    } catch (RuntimeException unsupported) { return false; }
+  }
+
   /** Creates an official Spring AI embedding client for the captured vector space. @author czhcc */
   public OpenAiEmbeddingModel embeddingModel(ModelVersion version) {
     if (!version.getKind().equals("EMBEDDING")) throw new IllegalArgumentException();
@@ -142,6 +179,17 @@ public class ModelGateway {
 
   private void stream(ModelVersion version, List<Map<String, String>> messages,
       java.util.function.Consumer<String> delta, Runnable check, boolean jsonObject) {
+    stream(version, messages, delta, check, jsonObject, ignored -> {});
+  }
+
+  /** Exposes public provider usage/finish metadata without reasoning or transport credentials. @author czhcc */
+  public void streamDetailed(ModelVersion version, List<Map<String, String>> messages,
+      java.util.function.Consumer<String> delta, Runnable check, java.util.function.Consumer<Map<String, Object>> metrics) {
+    stream(version, messages, delta, check, false, metrics);
+  }
+
+  private void stream(ModelVersion version, List<Map<String, String>> messages,
+      java.util.function.Consumer<String> delta, Runnable check, boolean jsonObject, java.util.function.Consumer<Map<String, Object>> metrics) {
     check.run();
     Prompt prompt = prompt(version, messages);
     guarded(() -> {
@@ -151,6 +199,9 @@ public class ModelGateway {
           vault.decrypt(version.getCipher(), version.getProfileId()).isEmpty(), true)) {
       chatModel(version, sdkClient(version, transport), jsonObject).stream(prompt)
           .doOnNext(response -> {
+            var usage = response.getMetadata().getUsage();
+            if (usage != null && usage.getTotalTokens() != null && usage.getTotalTokens() > 0)
+              metrics.accept(Map.of("usage", json.convertValue(usage, Map.class)));
             if (response.getResults().isEmpty()) return;
             if (response.getResults().size() != 1) throw new ModelFailure("model_stream_invalid");
             var generation = response.getResult();
@@ -164,6 +215,7 @@ public class ModelGateway {
               delta.accept(text);
             }
             if ("stop".equalsIgnoreCase(finish)) stopped.set(true);
+            if (finish != null && !finish.isBlank()) metrics.accept(Map.of("finishReason", finish));
           })
           .concatWith(Flux.defer(() -> stopped.get() && content.get() ? Flux.empty()
               : Flux.error(new ModelFailure("model_stream_incomplete"))))

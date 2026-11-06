@@ -80,13 +80,19 @@ public class ConversationService {
   /** Supplies at most ten completed pairs; failed, cancelled and unfinished output is excluded. @author czhcc */
   public List<Map<String, String>> history(UUID kb, UUID id, String actor) {
     owned(kb, id, actor, false);
-    var rows = jdbc.queryForList("SELECT question,answer FROM rag_conversation_turn WHERE knowledge_base_id=? AND conversation_id=?"
+    var rows = jdbc.queryForList("SELECT question,answer,result::TEXT AS agent_result FROM rag_conversation_turn WHERE knowledge_base_id=? AND conversation_id=?"
         + " AND status IN ('success','empty') ORDER BY turn_no DESC LIMIT 10", kb, id);
     Collections.reverse(rows);
     List<Map<String, String>> messages = new ArrayList<>();
     for (var row : rows) {
       messages.add(Map.of("role", "user", "content", row.get("question").toString()));
-      messages.add(Map.of("role", "assistant", "content", row.get("answer").toString()));
+      String answer = row.get("answer").toString();
+      if (row.get("agent_result") instanceof String result) {
+        var scopes = json.readTree(result).path("retrieval").path("metadata").path("agentScopes");
+        if (scopes.isArray() && !scopes.isEmpty() && scopes.toString().length() <= 8000)
+          answer += "\n[Server-validated previous query scopes; revalidate against the current generation, never reuse previous counts:]\n" + scopes;
+      }
+      messages.add(Map.of("role", "assistant", "content", answer));
     }
     return List.copyOf(messages);
   }

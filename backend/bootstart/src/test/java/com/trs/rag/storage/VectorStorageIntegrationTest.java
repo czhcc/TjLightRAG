@@ -206,7 +206,7 @@ class VectorStorageIntegrationTest {
   @Test
   void databaseVersionCommentsAndIndexesArePresent() {
     assertEquals(
-        "0.8.7",
+        System.getProperty("rag.test.vector-version", "0.8.7"),
         jdbc.queryForObject(
             "SELECT extversion FROM pg_extension WHERE extname='vector'", String.class));
     int version = jdbc.queryForObject("SHOW server_version_num", Integer.class);

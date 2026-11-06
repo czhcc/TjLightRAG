@@ -41,7 +41,9 @@ public class QueryStreams {
     }
 
     void cancel() {
-      terminal.set(true);
+      // Completion callbacks can follow an explicit cancel. Do not interrupt the
+      // worker again while it is persisting the cancelled turn and trace state.
+      if (!terminal.compareAndSet(false, true)) return;
       if (worker != null) worker.interrupt();
       emitter.complete();
     }
