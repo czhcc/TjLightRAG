@@ -11,8 +11,8 @@ import lombok.RequiredArgsConstructor;
 @Getter
 @RequiredArgsConstructor
 public enum VectorKind {
-  CHUNK("rag_chunk_embedding"),
-  ENTITY("rag_entity_embedding"),
-  RELATION("rag_relation_embedding");
-  private final String table;
+    CHUNK("rag_chunk_embedding"),
+    ENTITY("rag_entity_embedding"),
+    RELATION("rag_relation_embedding");
+    private final String table;
 }

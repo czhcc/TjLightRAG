@@ -6,12 +6,12 @@ package com.trs.app.rag.ingestion;
  * @author agent
  */
 public class LeaseLostException extends RuntimeException {
-  /**
-   * Initializes LeaseLostException for the document pipeline.
-   *
-   * @author agent
-   */
-  public LeaseLostException() {
-    super("Worker lease is no longer current");
-  }
+    /**
+     * Initializes LeaseLostException for the document pipeline.
+     *
+     * @author agent
+     */
+    public LeaseLostException() {
+        super("Worker lease is no longer current");
+    }
 }

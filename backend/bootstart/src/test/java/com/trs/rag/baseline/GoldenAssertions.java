@@ -1,14 +1,15 @@
 package com.trs.rag.baseline;
 
-import tools.jackson.databind.JsonNode;
 import static org.junit.jupiter.api.Assertions.*;
+
+import tools.jackson.databind.JsonNode;
 
 /** Shared comparison boundary for future production-algorithm adapters.
  * No reference output is used as a candidate implementation.
  * @author agent
  */
 public final class GoldenAssertions {
-    private GoldenAssertions() { }
+    private GoldenAssertions() {}
 
     /** Compares complete JSON trees, keeping array order and all provenance fields.
      * Only numeric leaves may use the explicitly supplied absolute tolerance.
@@ -35,11 +36,13 @@ public final class GoldenAssertions {
         } else if (expected.isArray()) {
             assertTrue(actual.isArray(), path + ": array required");
             assertEquals(expected.size(), actual.size(), path + ": array length");
-            for (int i = 0; i < expected.size(); i++) compare(expected.get(i), actual.get(i), tolerance, path + "[" + i + "]");
+            for (int i = 0; i < expected.size(); i++)
+                compare(expected.get(i), actual.get(i), tolerance, path + "[" + i + "]");
         } else if (expected.isObject()) {
             assertTrue(actual.isObject(), path + ": object required");
             assertEquals(expected.size(), actual.size(), path + ": field count");
-            for (var field : expected.properties()) compare(field.getValue(), actual.get(field.getKey()), tolerance, path + "." + field.getKey());
+            for (var field : expected.properties())
+                compare(field.getValue(), actual.get(field.getKey()), tolerance, path + "." + field.getKey());
         } else {
             assertEquals(expected, actual, path);
         }

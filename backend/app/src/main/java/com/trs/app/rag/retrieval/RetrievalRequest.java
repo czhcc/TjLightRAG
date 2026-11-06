@@ -12,38 +12,38 @@ import lombok.*;
 @Setter
 @NoArgsConstructor
 public class RetrievalRequest {
-  @NotBlank
-  @Size(max = 8000)
-  private String query;
+    @NotBlank
+    @Size(max = 8000)
+    private String query;
 
-  @NotNull
-  @Pattern(regexp = "naive|local|global|hybrid|mix")
-  private String mode = "mix";
+    @NotNull
+    @Pattern(regexp = "naive|local|global|hybrid|mix")
+    private String mode = "mix";
 
-  @Min(1)
-  @Max(100)
-  private int topK = 20, chunkTopK = 20;
+    @Min(1)
+    @Max(100)
+    private int topK = 20, chunkTopK = 20;
 
-  @Min(0)
-  @Max(20)
-  private int relatedChunkNumber = 5;
+    @Min(0)
+    @Max(20)
+    private int relatedChunkNumber = 5;
 
-  @NotNull
-  @Pattern(regexp = "VECTOR|WEIGHT")
-  private String chunkSelection = "VECTOR";
+    @NotNull
+    @Pattern(regexp = "VECTOR|WEIGHT")
+    private String chunkSelection = "VECTOR";
 
-  @Min(0)
-  @Max(16000)
-  private int maxEntityTokens = 6000, maxRelationTokens = 8000;
+    @Min(0)
+    @Max(16000)
+    private int maxEntityTokens = 6000, maxRelationTokens = 8000;
 
-  @Min(1024)
-  @Max(64000)
-  private int maxTotalTokens = 16000;
+    @Min(1024)
+    @Max(64000)
+    private int maxTotalTokens = 16000;
 
-  @DecimalMin("-1.0")
-  @DecimalMax("1.0")
-  private double cosineThreshold = .2;
+    @DecimalMin("-1.0")
+    @DecimalMax("1.0")
+    private double cosineThreshold = .2;
 
-  @Size(max = 32)
-  private List<@NotBlank @Size(max = 256) String> highLevelKeywords, lowLevelKeywords;
+    @Size(max = 32)
+    private List<@NotBlank @Size(max = 256) String> highLevelKeywords, lowLevelKeywords;
 }

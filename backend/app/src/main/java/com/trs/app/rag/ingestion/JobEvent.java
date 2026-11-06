@@ -13,7 +13,7 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class JobEvent {
-  private String event;
-  private String code;
-  private java.time.Instant createdAt;
+    private String event;
+    private String code;
+    private java.time.Instant createdAt;
 }

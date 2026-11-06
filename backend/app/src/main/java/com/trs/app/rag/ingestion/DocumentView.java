@@ -13,14 +13,14 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class DocumentView {
-  private java.util.UUID id;
-  private String sourceName;
-  private java.util.UUID revisionId;
-  private java.util.UUID jobId;
-  private String format;
-  private String status;
-  private String errorCode;
-  private long sizeBytes;
-  private long chunkCount;
-  private java.time.Instant createdAt;
+    private java.util.UUID id;
+    private String sourceName;
+    private java.util.UUID revisionId;
+    private java.util.UUID jobId;
+    private String format;
+    private String status;
+    private String errorCode;
+    private long sizeBytes;
+    private long chunkCount;
+    private java.time.Instant createdAt;
 }

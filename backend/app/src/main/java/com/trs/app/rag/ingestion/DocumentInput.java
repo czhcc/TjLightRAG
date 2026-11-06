@@ -13,9 +13,9 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class DocumentInput {
-  private byte[] original;
-  private String format;
-  private int chunkSize;
-  private int overlap;
-  private String parsedText;
+    private byte[] original;
+    private String format;
+    private int chunkSize;
+    private int overlap;
+    private String parsedText;
 }

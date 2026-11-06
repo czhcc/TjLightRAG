@@ -12,55 +12,44 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 @Slf4j
 public class SecurityConfig {
-  /** 创建密码编码器。 @return BCrypt 编码器 @author agent */
-  @Bean
-  public PasswordEncoder passwordEncoder() {
-    return new BCryptPasswordEncoder();
-  }
+    /** 创建密码编码器。 @return BCrypt 编码器 @author agent */
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
 
-  /** 从数据库加载用户。 @param users 用户仓库 @return 用户服务 @author agent */
-  @Bean
-  public UserDetailsService userDetailsService(UserRepository users) {
-    return name ->
-        users
-            .findByUsername(name)
-            .map(
-                u ->
-                    User.withUsername(u.getUsername())
+    /** 从数据库加载用户。 @param users 用户仓库 @return 用户服务 @author agent */
+    @Bean
+    public UserDetailsService userDetailsService(UserRepository users) {
+        return name -> users.findByUsername(name)
+                .map(u -> User.withUsername(u.getUsername())
                         .password(u.getPasswordHash())
                         .roles(u.isAdmin() ? new String[] {"USER", "ADMIN"} : new String[] {"USER"})
                         .build())
-            .orElseThrow(() -> new UsernameNotFoundException("Unknown user"));
-  }
+                .orElseThrow(() -> new UsernameNotFoundException("Unknown user"));
+    }
 
-  /** 定义认证边界和响应状态。 @param http 安全构建器 @return 过滤链 @throws Exception 配置错误 @author agent */
-  @Bean
-  public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-    return http.authorizeHttpRequests(
-            a ->
-                a.requestMatchers("/api/auth/csrf")
-                    .permitAll()
-                    .requestMatchers("/api/admin/**")
-                    .hasRole("ADMIN")
-                    .requestMatchers("/api/**")
-                    .authenticated()
-                    .anyRequest()
-                    .permitAll())
-        .requestCache(c -> c.disable())
-        .exceptionHandling(e -> e.authenticationEntryPoint((q, s, x) -> s.sendError(401)))
-        .formLogin(
-            f ->
-                f.loginProcessingUrl("/api/auth/login")
-                    .successHandler(
-                        (q, s, a) -> {
-                          log.info("Login succeeded for {}", a.getName());
-                          s.setStatus(200);
+    /** 定义认证边界和响应状态。 @param http 安全构建器 @return 过滤链 @throws Exception 配置错误 @author agent */
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        return http.authorizeHttpRequests(a -> a.requestMatchers("/api/auth/csrf")
+                        .permitAll()
+                        .requestMatchers("/api/admin/**")
+                        .hasRole("ADMIN")
+                        .requestMatchers("/api/**")
+                        .authenticated()
+                        .anyRequest()
+                        .permitAll())
+                .requestCache(c -> c.disable())
+                .exceptionHandling(e -> e.authenticationEntryPoint((q, s, x) -> s.sendError(401)))
+                .formLogin(f -> f.loginProcessingUrl("/api/auth/login")
+                        .successHandler((q, s, a) -> {
+                            log.info("Login succeeded for {}", a.getName());
+                            s.setStatus(200);
                         })
-                    .failureHandler((q, s, e) -> s.sendError(401))
-                    .permitAll())
-        .logout(
-            l ->
-                l.logoutUrl("/api/auth/logout").logoutSuccessHandler((q, s, a) -> s.setStatus(204)))
-        .build();
-  }
+                        .failureHandler((q, s, e) -> s.sendError(401))
+                        .permitAll())
+                .logout(l -> l.logoutUrl("/api/auth/logout").logoutSuccessHandler((q, s, a) -> s.setStatus(204)))
+                .build();
+    }
 }

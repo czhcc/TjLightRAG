@@ -11,8 +11,8 @@ import lombok.*;
 @Getter
 @AllArgsConstructor
 public class PageSlice<T> {
-  private final List<T> items;
-  private final long total;
-  private final int page;
-  private final int size;
+    private final List<T> items;
+    private final long total;
+    private final int page;
+    private final int size;
 }

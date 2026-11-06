@@ -16,14 +16,15 @@ import lombok.*;
 @Setter
 @NoArgsConstructor
 public class KnowledgeBase {
-  @Id private UUID id;
+    @Id
+    private UUID id;
 
-  @Column(nullable = false, length = 100)
-  private String name;
+    @Column(nullable = false, length = 100)
+    private String name;
 
-  @Column(nullable = false, columnDefinition = "text")
-  private String description;
+    @Column(nullable = false, columnDefinition = "text")
+    private String description;
 
-  @Column(name = "created_at", nullable = false)
-  private Instant createdAt;
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
 }

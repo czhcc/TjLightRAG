@@ -12,5 +12,6 @@ import lombok.*;
 @Setter
 @NoArgsConstructor
 public class MembershipRequest {
-  @NotNull private KnowledgeRole role;
+    @NotNull
+    private KnowledgeRole role;
 }

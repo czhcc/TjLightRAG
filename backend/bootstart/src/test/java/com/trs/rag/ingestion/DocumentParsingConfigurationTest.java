@@ -13,11 +13,15 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
  * @author czhcc
  */
 class DocumentParsingConfigurationTest {
-  @Test
-  void registersOneStandaloneParserBean() {
-    try (var context = new AnnotationConfigApplicationContext(DocumentParsingConfiguration.class)) {
-      assertEquals(1, context.getBeansOfType(DocumentParser.class).size());
-      assertEquals("text🙂", context.getBean(DocumentParser.class).fromText("text🙂", "text").getText());
+    @Test
+    void registersOneStandaloneParserBean() {
+        try (var context = new AnnotationConfigApplicationContext(DocumentParsingConfiguration.class)) {
+            assertEquals(1, context.getBeansOfType(DocumentParser.class).size());
+            assertEquals(
+                    "text🙂",
+                    context.getBean(DocumentParser.class)
+                            .fromText("text🙂", "text")
+                            .getText());
+        }
     }
-  }
 }

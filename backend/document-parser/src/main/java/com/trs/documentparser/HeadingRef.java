@@ -13,7 +13,7 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class HeadingRef {
-  private int start;
-  private int level;
-  private String text;
+    private int start;
+    private int level;
+    private String text;
 }

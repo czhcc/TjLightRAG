@@ -9,16 +9,16 @@ import lombok.Getter;
  */
 @Getter
 public class RagAccessException extends RuntimeException {
-  private final int status;
+    private final int status;
 
-  /**
-   * Creates a sanitized authorization/not-found result.
-   *
-   * @param status HTTP status
-   * @author agent
-   */
-  public RagAccessException(int status) {
-    super(status == 403 ? "Forbidden" : "Not found");
-    this.status = status;
-  }
+    /**
+     * Creates a sanitized authorization/not-found result.
+     *
+     * @param status HTTP status
+     * @author agent
+     */
+    public RagAccessException(int status) {
+        super(status == 403 ? "Forbidden" : "Not found");
+        this.status = status;
+    }
 }

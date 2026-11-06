@@ -16,32 +16,33 @@ import org.hibernate.annotations.Immutable;
 @Getter
 @NoArgsConstructor
 public class StoredRevision {
-  @EmbeddedId private ScopedRevisionId id;
+    @EmbeddedId
+    private ScopedRevisionId id;
 
-  @Column(name = "document_id", nullable = false)
-  private UUID documentId;
+    @Column(name = "document_id", nullable = false)
+    private UUID documentId;
 
-  @Column(name = "content_hash", nullable = false, length = 64)
-  private String contentHash;
+    @Column(name = "content_hash", nullable = false, length = 64)
+    private String contentHash;
 
-  @Column(nullable = false, length = 16)
-  private String format;
+    @Column(nullable = false, length = 16)
+    private String format;
 
-  @Column(nullable = false, length = 64)
-  private String tokenizer;
+    @Column(nullable = false, length = 64)
+    private String tokenizer;
 
-  @Column(name = "chunk_strategy", nullable = false, length = 64)
-  private String chunkStrategy;
+    @Column(name = "chunk_strategy", nullable = false, length = 64)
+    private String chunkStrategy;
 
-  @Column(name = "parser_version", nullable = false, length = 64)
-  private String parserVersion;
+    @Column(name = "parser_version", nullable = false, length = 64)
+    private String parserVersion;
 
-  @Column(name = "chunk_size", nullable = false)
-  private int chunkSize;
+    @Column(name = "chunk_size", nullable = false)
+    private int chunkSize;
 
-  @Column(nullable = false)
-  private int overlap;
+    @Column(nullable = false)
+    private int overlap;
 
-  @Column(name = "parsed_text", columnDefinition = "text")
-  private String parsedText;
+    @Column(name = "parsed_text", columnDefinition = "text")
+    private String parsedText;
 }
