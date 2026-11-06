@@ -1,6 +1,6 @@
-package com.trs.app.rag.agent;
+package com.trs.agent;
 
-import static com.trs.app.rag.agent.ObjectFilterCompiler.*;
+import static com.trs.agent.ObjectFilterCompiler.*;
 
 import com.trs.app.rag.model.*;
 import com.trs.app.rag.retrieval.*;

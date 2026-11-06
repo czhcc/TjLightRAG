@@ -65,16 +65,16 @@ class RetrievalIntegrationTest {
     QueryService answers;
 
     @Autowired
-    com.trs.app.rag.agent.AgentAnswerService agent;
+    com.trs.agent.AgentAnswerService agent;
 
     @Autowired
-    com.trs.app.rag.agent.AgentDataRepository agentData;
+    com.trs.agent.AgentDataRepository agentData;
 
     @Autowired
-    com.trs.app.rag.agent.AgentToolRegistry agentTools;
+    com.trs.agent.AgentToolRegistry agentTools;
 
     @Autowired
-    com.trs.app.rag.agent.AgentTraceRecorder agentTraces;
+    com.trs.agent.AgentTraceRecorder agentTraces;
 
     @Autowired
     ConversationService conversations;
@@ -395,7 +395,7 @@ class RetrievalIntegrationTest {
     @Test
     void repeatedSuccessfulCallsReuseRunLocalResultsAndInvalidCallsNeverBecomeEvidence() {
         readyAnswer();
-        var run = new com.trs.app.rag.agent.AgentRunContext(
+        var run = new com.trs.agent.AgentRunContext(
                 repository.capture(kb, "admin"),
                 "admin",
                 answerRequest(),
@@ -413,7 +413,7 @@ class RetrievalIntegrationTest {
         assertEquals(1, run.getObservations().size());
         assertEquals(3, run.getToolCalls());
         assertTrue(run.hasAnswerEvidence());
-        var separate = new com.trs.app.rag.agent.AgentRunContext(
+        var separate = new com.trs.agent.AgentRunContext(
                 run.getSnapshot(), "admin", answerRequest(), run.getAnswer(), null, run.getDeadline());
         assertTrue(separate.getSuccessfulTools().isEmpty());
         var invalid = agentTools.callbacks(separate).stream()
@@ -512,7 +512,7 @@ class RetrievalIntegrationTest {
                 "UPDATE rag_index_relation SET relation_types='[\"uses\",\"related\"]'::JSONB WHERE generation_id=?",
                 gen);
         var binding = models.snapshot(kb);
-        var run = new com.trs.app.rag.agent.AgentRunContext(
+        var run = new com.trs.agent.AgentRunContext(
                 repository.capture(kb, "admin"),
                 "admin",
                 answerRequest(),

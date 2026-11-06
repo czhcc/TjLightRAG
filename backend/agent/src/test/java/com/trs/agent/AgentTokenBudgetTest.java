@@ -1,8 +1,7 @@
-package com.trs.rag.query;
+package com.trs.agent;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.trs.app.rag.agent.AgentTokenBudget;
 import com.trs.app.rag.ingestion.RagTokenizer;
 import com.trs.app.rag.model.ModelVersion;
 import com.trs.app.rag.query.QueryRequest;

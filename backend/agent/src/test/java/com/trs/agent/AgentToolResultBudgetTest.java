@@ -1,8 +1,7 @@
-package com.trs.rag.query;
+package com.trs.agent;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.trs.app.rag.agent.AgentToolResultBudget;
 import com.trs.app.rag.ingestion.RagTokenizer;
 import java.util.*;
 import org.junit.jupiter.api.Test;
@@ -62,7 +61,7 @@ class AgentToolResultBudgetTest {
 
     @Test
     void aFullyOmittedPageDoesNotBecomeZeroMatchAnswerEvidence() {
-        var run = new com.trs.app.rag.agent.AgentRunContext(
+        var run = new com.trs.agent.AgentRunContext(
                 null, "test", new com.trs.app.rag.query.QueryRequest(), null, null, System.nanoTime() + 1000000000L);
         run.getObservations()
                 .add(Map.of(
