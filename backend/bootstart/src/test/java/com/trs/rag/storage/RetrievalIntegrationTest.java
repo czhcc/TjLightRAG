@@ -40,6 +40,7 @@ import tools.jackson.databind.json.JsonMapper;
       "rag.indexing.enabled=false",
       "rag.models.master-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
       "rag.retrieval.max-concurrency=2"
+      ,"rag.agent.enabled=false"
     })
 class RetrievalIntegrationTest {
   @Container
@@ -65,6 +66,10 @@ class RetrievalIntegrationTest {
   }
 
   @Autowired QueryService answers;
+  @Autowired com.trs.app.rag.agent.AgentAnswerService agent;
+  @Autowired com.trs.app.rag.agent.AgentDataRepository agentData;
+  @Autowired com.trs.app.rag.agent.AgentToolRegistry agentTools;
+  @Autowired com.trs.app.rag.agent.AgentTraceRecorder agentTraces;
   @Autowired ConversationService conversations;
   @Autowired ConversationQueries conversationQueries;
   @Autowired QueryStreams streams;
@@ -100,6 +105,243 @@ class RetrievalIntegrationTest {
   List<tools.jackson.databind.JsonNode> rewriteMessages = new CopyOnWriteArrayList<>();
   List<tools.jackson.databind.JsonNode> answerMessages = new CopyOnWriteArrayList<>();
   volatile CountDownLatch entered, release;
+  AtomicReference<String> agentMode = new AtomicReference<>("");
+  AtomicInteger agentRound = new AtomicInteger();
+  List<String> nativeChoices = new CopyOnWriteArrayList<>();
+
+  private void configureAnswer() { models.bind(kb, Map.of("answer", model("CHAT", "answer-model", 0)), "admin"); }
+
+  @Test
+  void conversationAgentPersistsSuccessAndNeverCompletesAnInvalidStatisticalAnswer() throws Exception {
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin"); configureAnswer();
+    org.springframework.test.util.ReflectionTestUtils.setField(agent, "enabled", true);
+    try {
+      UUID cid = (UUID) conversations.create(kb, "admin").get("id");
+      var request = answerRequest(); request.setConversationId(cid); request.setQuery("有多少人？"); agentMode.set("stats");
+      var result = conversationQueries.stream(kb, "admin", request, (event, data) -> {});
+      assertEquals("success", result.getStatus());
+      assertTrue(conversations.history(kb, cid, "admin").getLast().get("content").contains("Server-validated previous query scopes"));
+      var session = login("admin");
+      var response = session.client().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/knowledge-bases/" + kb + "/conversations/" + cid + "/turns/" + request.getRequestId() + "/trace")).GET().build(), HttpResponse.BodyHandlers.ofString());
+      assertEquals(200, response.statusCode()); assertEquals("no-store", response.headers().firstValue("Cache-Control").orElseThrow());
+      var retry = answerRequest(); retry.setConversationId(cid); retry.setQuery("再统计一次人数"); agentMode.set("badstats"); agentRound.set(0);
+      assertEquals("query_agent_invalid_statistics", assertThrows(RetrievalFailure.class, () -> conversationQueries.stream(kb, "admin", retry, (event, data) -> {})).getCode());
+      var saved = conversations.turns(kb, cid, "admin", null);
+      assertEquals("failed", saved.getLast().get("status")); assertEquals("共有5个对象。", saved.getLast().get("answer"));
+      assertEquals("failed", agentTraces.view(kb, cid, retry.getRequestId(), "admin", 0, 200).get("status"));
+    } finally { org.springframework.test.util.ReflectionTestUtils.setField(agent, "enabled", false); }
+  }
+
+  @Test
+  void agentWithLargeConfiguredOutputAllocatesSpaceForNativeToolsAndFinalEvidence() {
+    readyAnswer();
+    var configured = new ModelRequest();
+    configured.setName("agent-large-output"); configured.setKind("CHAT"); configured.setModel("answer-model");
+    configured.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1");
+    configured.setApiKey("retrieval-private-key"); configured.setContextTokens(16000); configured.setMaxOutputTokens(15000);
+    configured.setTimeoutSeconds(5); configured.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
+    UUID answer = UUID.fromString(models.save(null, configured, "admin").get("id").toString());
+    models.bind(kb, Map.of("answer", answer), "admin");
+    agentMode.set("stats");
+    UUID cid = (UUID) conversations.create(kb, "admin").get("id");
+    var req = answerRequest(); req.setConversationId(cid); req.setQuery("有多少人？");
+    conversations.begin(kb, cid, "admin", req.getRequestId(), req.getQuery());
+    var result = agent.answer(kb, "admin", req, List.of(), (event, value) -> {});
+    assertEquals("共有1个对象。", result.getAnswer());
+    assertEquals(15000, models.version(answer).getMaxOutputTokens(), "per-call allocation must not change saved configuration");
+    var spans = (List<Map<String, Object>>) agentTraces.view(kb, cid, req.getRequestId(), "admin", 0, 200).get("spans");
+    var first = spans.stream().filter(s -> s.get("name").equals("agent_decision")).findFirst().orElseThrow();
+    var payload = agentTraces.payload(kb, cid, req.getRequestId(), (UUID) first.get("id"), "admin", "request", 0);
+    var body = new StringBuilder(payload.get("content").toString());
+    for (int part = 1; part < ((Number) payload.get("parts")).intValue(); part++)
+      body.append(agentTraces.payload(kb, cid, req.getRequestId(), (UUID) first.get("id"), "admin", "request", part).get("content"));
+    var recorded = json.readTree(body.toString());
+    assertEquals(2048, recorded.path("parameters").path("maxOutputTokens").asInt());
+    assertEquals(16000, recorded.path("tokenBudget").path("limit").asInt());
+    assertTrue(recorded.path("tokenBudget").path("toolTokens").asInt() > 0);
+  }
+
+  @Test
+  void nativeAgentCountsFullPopulationAndPersistsEncryptedPrivateTrace() throws Exception {
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin"); configureAnswer();
+    agentMode.set("stats");
+    UUID cid = (UUID) conversations.create(kb, "admin").get("id");
+    var req = answerRequest(); req.setConversationId(cid); req.setQuery("有多少人？");
+    var turn = conversations.begin(kb, cid, "admin", req.getRequestId(), req.getQuery());
+    List<String> events = new ArrayList<>();
+    var result = agent.answer(kb, "admin", req, turn.history(), (name, value) -> events.add(name));
+    conversations.complete(kb, cid, "admin", turn.id(), result);
+    assertEquals("共有1个对象。", result.getAnswer()); assertTrue(events.contains("statistics")); assertTrue(events.contains("delta"));
+    assertTrue(embeddingInputs.isEmpty(), "Exact statistics require no vector calls");
+    var trace = agentTraces.view(kb, cid, turn.id(), "admin", 0, 200);
+    assertEquals("success", trace.get("status")); assertEquals("available", trace.get("availability"));
+    var spans = (List<Map<String, Object>>) trace.get("spans");
+    var decision = spans.stream().filter(s -> s.get("name").equals("agent_decision")).findFirst().orElseThrow();
+    var payload = agentTraces.payload(kb, cid, turn.id(), (UUID) decision.get("id"), "admin", "request", 0);
+    assertTrue(payload.get("content").toString().contains("enable_thinking"));
+    assertFalse(payload.get("content").toString().contains("retrieval-private-key"));
+    assertTrue(jdbc.queryForList("SELECT cipher FROM rag_agent_trace_payload").stream().noneMatch(row -> row.get("cipher").toString().contains("get_knowledge_schema")));
+    jdbc.update("INSERT INTO app_user(username,password_hash) SELECT 'trace-reader',password_hash FROM app_user WHERE username='admin' ON CONFLICT (username) DO NOTHING");
+    bases.grant(kb, "admin", "trace-reader", KnowledgeRole.READER);
+    assertThrows(RagAccessException.class, () -> agentTraces.view(kb, cid, turn.id(), "trace-reader", 0, 200));
+    jdbc.update("UPDATE rag_agent_trace_payload SET expires_at=CURRENT_TIMESTAMP-INTERVAL '1 day'");
+    assertEquals("expired", agentTraces.payload(kb, cid, turn.id(), (UUID) decision.get("id"), "admin", "request", 0).get("availability"));
+    conversations.delete(kb, cid, "admin");
+    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM rag_agent_trace WHERE id=?", Integer.class, trace.get("traceId")));
+  }
+
+  @Test
+  void agentSearchesKeepOneGenerationAndExposeProviderDeltasAndNestedCalls() {
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin"); configureAnswer();
+    UUID next = seed(3, "new-");
+    switchIndex.set(() -> indexes.activate(kb, next, gen, "admin"));
+    agentMode.set("search"); UUID cid = (UUID) conversations.create(kb, "admin").get("id");
+    var req = answerRequest(); req.setConversationId(cid); conversations.begin(kb, cid, "admin", req.getRequestId(), req.getQuery());
+    List<String> deltas = new ArrayList<>();
+    var result = agent.answer(kb, "admin", req, List.of(), (name, value) -> { if (name.equals("delta")) deltas.add(((Map<?, ?>) value).get("text").toString()); });
+    assertEquals(gen, result.getRetrieval().getGenerationId()); assertFalse(result.getRetrieval().getChunks().isEmpty());
+    assertEquals("事实🙂[1]。", String.join("", deltas)); assertEquals(List.of("1"), result.getCitedReferenceIds());
+    var trace = agentTraces.view(kb, cid, req.getRequestId(), "admin", 0, 200);
+    var spans = (List<Map<String, Object>>) trace.get("spans");
+    assertTrue(spans.stream().anyMatch(s -> s.get("name").equals("embedding") && s.get("parentId") != null));
+    assertEquals(2, spans.stream().filter(s -> s.get("name").equals("search_knowledge_base")).count());
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(ints = {55, 100})
+  void agentBoundsLargeRelatedPagesAndFinishesBeforeItsDecisionHistoryOverflows(int repeats) {
+    readyAnswer();
+    jdbc.update("UPDATE rag_index_relation SET description=? WHERE knowledge_base_id=?", "关联证据天地玄黄宇宙洪荒".repeat(repeats), kb);
+    var configured = new ModelRequest(); configured.setName("bounded-observations-" + repeats); configured.setKind("CHAT");
+    configured.setModel("answer-model"); configured.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/v1");
+    configured.setApiKey("retrieval-private-key"); configured.setContextTokens(12000); configured.setMaxOutputTokens(1000);
+    configured.setTimeoutSeconds(5); configured.setExtraBody(Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
+    UUID model = UUID.fromString(models.save(null, configured, "admin").get("id").toString());
+    models.bind(kb, Map.of("answer", model), "admin"); agentMode.set("largepages");
+    var request = answerRequest(); if (repeats == 55) request.setMaxTotalTokens(12000);
+    var result = agent.answer(kb, "admin", request, List.of(), (event, value) -> {});
+    assertEquals("success", result.getStatus()); assertEquals("事实🙂[1]。", result.getAnswer());
+    if (repeats == 55) {
+      assertTrue(((Number) result.getRetrieval().getMetadata().get("contextCompactions")).intValue() > 0);
+      assertTrue(Set.of("context_budget", "decision_limit").contains(result.getRetrieval().getMetadata().get("agentStopReason")));
+    }
+    else {
+      assertTrue(Set.of("context_budget", "decision_limit").contains(result.getRetrieval().getMetadata().get("agentStopReason")));
+      assertTrue(((Number) result.getRetrieval().getMetadata().get("contextCompactions")).intValue() > 0);
+      assertTrue(answerMessages.getLast().toString().contains("truncated") || answerMessages.getLast().toString().contains("previewsMayOmitDetails"));
+    }
+  }
+
+  @Test
+  void nativeAgentRecallsArchivedObjectDetailsThroughTheContextTool() {
+    readyAnswer(); agentMode.set("memory");
+    jdbc.update("UPDATE rag_index_entity SET attributes=?::JSONB WHERE knowledge_base_id=? AND name='Alice'",
+        json.writeValueAsString(Map.of("notes", List.of(Map.of("type", "string", "value", "original fact ".repeat(5000))))), kb);
+    UUID cid = (UUID) conversations.create(kb, "admin").get("id");
+    var request = answerRequest(); request.setConversationId(cid); conversations.begin(kb, cid, "admin", request.getRequestId(), request.getQuery());
+    var result = agent.answer(kb, "admin", request, List.of(), (event, value) -> {});
+    assertEquals("success", result.getStatus()); assertEquals(4, agentRound.get());
+    var spans = (List<Map<String, Object>>) agentTraces.view(kb, cid, request.getRequestId(), "admin", 0, 200).get("spans");
+    assertTrue(spans.stream().anyMatch(s -> s.get("name").equals("read_agent_context") && s.get("status").equals("success")));
+    assertTrue(answerMessages.getLast().toString().contains("untrusted_serialized_excerpt"));
+  }
+
+  @Test
+  void repeatedSuccessfulCallsReuseRunLocalResultsAndInvalidCallsNeverBecomeEvidence() {
+    readyAnswer();
+    var run = new com.trs.app.rag.agent.AgentRunContext(repository.capture(kb, "admin"), "admin", answerRequest(),
+        models.version(models.snapshot(kb).get("answer")), null, System.nanoTime() + TimeUnit.SECONDS.toNanos(30));
+    var callback = agentTools.callbacks(run).stream().filter(c -> c.getToolDefinition().name().equals("aggregate_objects")).findFirst().orElseThrow();
+    var first = callback.call("{\"filter\":{\"name\":\"Alice\",\"types\":[\"person\"]}}");
+    assertEquals(first, callback.call("{\"filter\":{\"types\":[\"person\"],\"name\":\"Alice\"}}"));
+    assertEquals(first, callback.call("{\"filter\":{\"name\":\"Alice\",\"types\":[\"person\"]}}"));
+    assertEquals(1, run.getStatistics().size()); assertEquals(1, run.getObservations().size());
+    assertEquals(3, run.getToolCalls()); assertTrue(run.hasAnswerEvidence());
+    var separate = new com.trs.app.rag.agent.AgentRunContext(run.getSnapshot(), "admin", answerRequest(), run.getAnswer(), null, run.getDeadline());
+    assertTrue(separate.getSuccessfulTools().isEmpty());
+    var invalid = agentTools.callbacks(separate).stream().filter(c -> c.getToolDefinition().name().equals("get_knowledge_schema")).findFirst().orElseThrow();
+    assertTrue(invalid.call("{\"section\":\"INVALID\"}").contains("error"));
+    assertTrue(invalid.call("{\"section\":\"INVALID\"}").contains("error"));
+    assertEquals("query_agent_no_progress", assertThrows(RetrievalFailure.class, () -> invalid.call("{\"section\":\"INVALID\"}")).getCode());
+    assertTrue(separate.getSuccessfulTools().isEmpty()); assertFalse(separate.hasAnswerEvidence());
+  }
+
+  @Test
+  void agentStopsRepeatingSuccessfulStatisticsAndFinalizesWithoutRepeatingTheQuery() {
+    readyAnswer(); agentMode.set("statsloop");
+    var result = agent.answer(kb, "admin", answerRequest(), List.of(), (event, value) -> {});
+    assertEquals("共有1个对象。", result.getAnswer());
+    assertEquals(3, agentRound.get());
+    assertEquals(1, ((List<?>) result.getRetrieval().getMetadata().get("statistics")).size());
+    assertEquals("repeated_successful_calls", result.getRetrieval().getMetadata().get("agentStopReason"));
+  }
+
+  @Test
+  void agentReservesFinalAnswerAfterTheLastAllowedToolOrDecision() {
+    readyAnswer(); agentMode.set("statsloop");
+    org.springframework.test.util.ReflectionTestUtils.setField(agent, "maxToolCalls", 2);
+    try {
+      var result = agent.answer(kb, "admin", answerRequest(), List.of(), (event, value) -> {});
+      assertEquals("共有1个对象。", result.getAnswer()); assertEquals(2, agentRound.get());
+      assertEquals("tool_limit", result.getRetrieval().getMetadata().get("agentStopReason"));
+    } finally { org.springframework.test.util.ReflectionTestUtils.setField(agent, "maxToolCalls", 12); }
+    agentRound.set(0);
+    org.springframework.test.util.ReflectionTestUtils.setField(agent, "maxDecisions", 2);
+    try {
+      var result = agent.answer(kb, "admin", answerRequest(), List.of(), (event, value) -> {});
+      assertEquals("共有1个对象。", result.getAnswer()); assertEquals(2, agentRound.get());
+      assertEquals("decision_limit", result.getRetrieval().getMetadata().get("agentStopReason"));
+    } finally { org.springframework.test.util.ReflectionTestUtils.setField(agent, "maxDecisions", 8); }
+  }
+
+  @Test
+  void agentRetriesAnInitialPlainReplyWithoutClaimingUnsupportedToolsOrUsingItsDraft() {
+    readyAnswer(); agentMode.set("textfirst");
+    var result = agent.answer(kb, "admin", answerRequest(), List.of(), (event, value) -> {});
+    assertEquals("共有1个对象。", result.getAnswer()); assertEquals(4, agentRound.get());
+    assertEquals(List.of("required", "required", "auto", "auto"), nativeChoices);
+    assertFalse(answerMessages.getLast().toString().contains("UNTRUSTED_INITIAL_DRAFT"));
+    assertEquals(1, ((List<?>) result.getRetrieval().getMetadata().get("statistics")).size());
+  }
+
+  @Test
+  void agentRejectsUnsupportedProvidersAndRepeatedCallsWithoutFinalSuccess() {
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin"); configureAnswer();
+    agentMode.set("unsupported");
+    assertEquals("query_agent_native_tools_missing", assertThrows(RetrievalFailure.class, () -> agent.answer(kb, "admin", answerRequest(), List.of(), null)).getCode());
+    assertEquals(2, agentRound.get());
+    agentRound.set(0); agentMode.set("loop");
+    assertEquals("query_agent_no_progress", assertThrows(RetrievalFailure.class, () -> agent.answer(kb, "admin", answerRequest(), List.of(), null)).getCode());
+    assertTrue(agentRound.get() <= 3);
+  }
+
+  @Test
+  void agentSqlFiltersAndGroupingUseNativeAttributesAndUndirectedDistinctEdges() {
+    UUID gen = seed(3, ""); indexes.activate(kb, gen, null, "admin"); configureAnswer();
+    jdbc.update("UPDATE rag_index_entity SET attributes=?::JSONB WHERE generation_id=? AND name='Alice'", "{\"age\":[{\"type\":\"number\",\"value\":30}],\"unit\":[{\"type\":\"string\",\"value\":\"A\"},{\"type\":\"string\",\"value\":\"B\"}]}", gen);
+    jdbc.update("UPDATE rag_index_relation SET relation_types='[\"uses\",\"related\"]'::JSONB WHERE generation_id=?", gen);
+    var binding = models.snapshot(kb); var run = new com.trs.app.rag.agent.AgentRunContext(repository.capture(kb, "admin"), "admin", answerRequest(), models.version(binding.get("answer")), null, System.nanoTime() + TimeUnit.SECONDS.toNanos(30));
+    var schema = (Map<?, ?>) agentData.execute(run, "get_knowledge_schema", Map.of("section", "ATTRIBUTES", "entityTypes", List.of("person")));
+    assertEquals("2", schema.get("total")); assertEquals(50, schema.get("size"));
+    assertEquals("2", ((Map<?, ?>) agentData.execute(run, "get_knowledge_schema", Map.of("section", "RELATION_TYPES"))).get("total"));
+    var found = (Map<?, ?>) agentData.execute(run, "find_objects", Map.of("filter", Map.of("name", "ALI")));
+    assertEquals("1", found.get("total"));
+    assertEquals(1, ((List<?>) ((Map<?, ?>) agentData.execute(run, "get_object", Map.of("objectId", uuid("Alice").toString()))).get("items")).size());
+    var sourceTexts = (Map<?, ?>) agentData.execute(run, "get_object_texts", Map.of("objectId", uuid("Alice").toString()));
+    assertFalse(((List<?>) sourceTexts.get("items")).isEmpty()); assertFalse(run.getEvidence().chunks().isEmpty());
+    assertEquals("1", ((Map<?, ?>) agentData.execute(run, "get_related_objects", Map.of("objectId", uuid("Alice").toString(), "targetFilter", Map.of("types", List.of("organization"))))).get("total"));
+    var count = (Map<?, ?>) agentData.execute(run, "aggregate_objects", Map.of("filter", Map.of("attributes", List.of(Map.of("name", "age", "op", "GTE", "value", 30)))));
+    assertEquals("1", count.get("count"));
+    var groups = (Map<?, ?>) agentData.execute(run, "aggregate_objects", Map.of("groupBy", Map.of("kind", "ATTRIBUTE", "attributeName", "unit")));
+    assertEquals("3", groups.get("total")); assertEquals("3", groups.get("groupTotal"));
+    var related = (Map<?, ?>) agentData.execute(run, "aggregate_objects", Map.of("groupBy", Map.of("kind", "RELATED_OBJECT")));
+    assertFalse(((List<?>) related.get("groups")).isEmpty());
+    var reverse = (Map<?, ?>) agentData.execute(run, "aggregate_relations", Map.of("endpointA", Map.of("name", "LightRAG"), "endpointB", Map.of("name", "Alice")));
+    assertEquals("1", reverse.get("count"));
+    var typed = (Map<?, ?>) agentData.execute(run, "aggregate_relations", Map.of("relationTypes", List.of("uses"), "groupBy", "RELATION_TYPE"));
+    assertEquals(1, ((List<?>) typed.get("groups")).size());
+    assertEquals("0", ((Map<?, ?>) agentData.execute(run, "aggregate_objects", Map.of("filter", Map.of("name", "absent")))).get("count"));
+  }
 
   @Test
   void objectExplorerCountsFiltersPagesAndKeepsDetailsInTheCapturedGeneration() throws Exception {
@@ -376,7 +618,31 @@ class RetrievalIntegrationTest {
               e.sendResponseHeaders(400, -1);
               return;
             }
-            if (e.getRequestURI().getPath().endsWith("/embeddings")) {
+            if (body.path("tools").isArray() && !agentMode.get().isEmpty()) {
+              nativeChoices.add(body.path("tool_choice").asText());
+              int round = agentRound.incrementAndGet(); String mode = agentMode.get();
+              boolean stop = mode.equals("unsupported") || mode.equals("textfirst") && round == 1 || (Set.of("memory", "textfirst").contains(mode) ? round >= 4 : !Set.of("loop", "statsloop", "largepages").contains(mode) && round >= 3);
+              if (stop) response = json.writeValueAsString(Map.of("choices", List.of(Map.of("finish_reason", "stop", "message", Map.of("role", "assistant", "content", mode.equals("textfirst") && round == 1 ? "UNTRUSTED_INITIAL_DRAFT 12345" : "Ready")))));
+              else {
+                String tool = mode.equals("search") ? "search_knowledge_base" : round == 1 || mode.equals("loop") ? "get_knowledge_schema" : "aggregate_objects";
+                Object params = mode.equals("search") ? Map.of("query", "Alice question " + round, "mode", "mix") : tool.equals("get_knowledge_schema") ? Map.of("section", "ENTITY_TYPES") : Map.of("filter", Map.of("types", List.of("person")));
+                if (mode.equals("largepages") && round == 2) { tool = "find_objects"; params = Map.of("filter", Map.of("types", List.of("person"))); }
+                if (mode.equals("largepages") && round > 2) {
+                  tool = "get_related_objects"; params = Map.of("objectId", uuid("Alice").toString(), "size", round + 10);
+                }
+                if (mode.equals("memory") && round == 2) { tool = "get_object"; params = Map.of("objectId", uuid("Alice").toString()); }
+                if (mode.equals("textfirst") && round == 2) { tool = "get_knowledge_schema"; params = Map.of("section", "ENTITY_TYPES"); }
+                if (mode.equals("memory") && round == 3) {
+                  String memoryId = "";
+                  for (var message : body.path("messages")) if (message.path("role").asText().equals("tool")) {
+                    var value = json.readTree(message.path("content").asText());
+                    if (value.has("memoryId")) memoryId = value.path("memoryId").asText();
+                  }
+                  tool = "read_agent_context"; params = Map.of("memoryId", memoryId, "maxChars", 300);
+                }
+                response = json.writeValueAsString(Map.of("choices", List.of(Map.of("finish_reason", "tool_calls", "message", Map.of("role", "assistant", "content", "", "tool_calls", List.of(Map.of("id", "call-" + round, "type", "function", "function", Map.of("name", tool, "arguments", json.writeValueAsString(params)))))))));
+              }
+            } else if (e.getRequestURI().getPath().endsWith("/embeddings")) {
               embeddingModels.add(body.path("model").asText());
               List<String> inputs = new ArrayList<>();
               body.path("input").forEach(v -> inputs.add(v.asText()));
@@ -421,7 +687,7 @@ class RetrievalIntegrationTest {
                 e.sendResponseHeaders(200, 0);
                 e.getResponseBody()
                     .write(
-                        com.trs.rag.model.OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{\"content\":\"事实🙂[1]。\"},\"finish_reason\":null}]}\n\n")
+                        com.trs.rag.model.OpenAiFixtures.events("data: {\"choices\":[{\"delta\":{\"content\":\"" + ((agentMode.get().equals("stats") || agentMode.get().equals("statsloop") || agentMode.get().equals("textfirst")) ? "共有1个对象。" : agentMode.get().equals("badstats") ? "共有5个对象。" : "事实🙂[1]。") + "\"},\"finish_reason\":null}]}\n\n")
                             .getBytes(StandardCharsets.UTF_8));
                 e.getResponseBody().flush();
                 answerEntered.countDown();

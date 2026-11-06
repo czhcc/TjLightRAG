@@ -189,7 +189,10 @@ public class ModelConfigurationService {
       case "RERANK" -> gateway.rerank(v, "test", List.of("test"));
       default -> throw new IllegalArgumentException();
     }
-    return Map.of("success", true, "elapsedMs", (System.nanoTime() - begin) / 1000000, "kind", v.getKind());
+    var result = new LinkedHashMap<String, Object>();
+    result.put("success", true); result.put("kind", v.getKind());
+    if (v.getKind().equals("CHAT")) result.put("toolCallingSupported", gateway.supportsTools(v));
+    result.put("elapsedMs", (System.nanoTime() - begin) / 1000000); return result;
   }
 
   /** Reports nonsecret deployment readiness. @author czhcc */

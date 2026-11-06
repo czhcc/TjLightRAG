@@ -4,6 +4,8 @@ import { ApiError, mutate, request } from "./api";
 import { queryStream } from "./queryStream";
 import MarkdownAnswer from "./MarkdownAnswer";
 import Modal from "./Modal";
+import AgentTrace from "./AgentTrace";
+import AgentStatistics, { type Statistic } from "./AgentStatistics";
 type Origin = {
   documentId: string;
   revisionId: string;
@@ -11,6 +13,7 @@ type Origin = {
   chunkOrder: number;
 };
 type Evidence = {
+  metadata?: { statistics?: Statistic[]; traceId?: string };
   generationId: string;
   chunks: {
     chunk_id: string;
@@ -47,6 +50,8 @@ export default function QueryPanel({
   const { t } = useTranslation();
   const [conversations, setConversations] = useState<Conversation[]>([]), [conversation, setConversation] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]), [submitted, setSubmitted] = useState("");
+  const [submittedId, setSubmittedId] = useState(""), [traceTurn, setTraceTurn] = useState("");
+  const [agentPhase, setAgentPhase] = useState(""), [statistics, setStatistics] = useState<Statistic[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true), [historyPage, setHistoryPage] = useState(0);
   const [moreConversations, setMoreConversations] = useState(false), [moreTurns, setMoreTurns] = useState(false);
   const navigation = useRef<AbortController | null>(null);
@@ -89,6 +94,7 @@ export default function QueryPanel({
     sourceAbort.current?.abort();
   }
   useEffect(() => {
+    setTraceTurn(""); setSubmittedId(""); setStatistics([]); setAgentPhase("");
     const seq = ++sequence.current;
     const controller = new AbortController(); navigation.current = controller;
     setConversations([]); setConversation(""); setTurns([]); setSubmitted(""); setLoadingHistory(true);
@@ -144,6 +150,7 @@ export default function QueryPanel({
     }
   }
   async function choose(id: string) {
+    setTraceTurn(""); setSubmittedId(""); setStatistics([]); setAgentPhase("");
     sequence.current++; cancel(); navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
     const seq = sequence.current;
@@ -182,6 +189,11 @@ export default function QueryPanel({
     else if (e instanceof ApiError && ["query_budget_too_small", "retrieval_budget_too_small", "model_context_exceeded"].includes(e.code ?? ""))
       setError(t("query.budgetFailure"));
     else if (e instanceof ApiError && e.code === "query_conversation_busy") setError(t("query.conversationBusy"));
+    else if (e instanceof ApiError && e.code === "query_agent_tools_unsupported") setError(t("agentTrace.toolsUnsupported"));
+    else if (e instanceof ApiError && e.code === "query_agent_native_tools_missing") setError(t("agentTrace.nativeToolsMissing"));
+    else if (e instanceof ApiError && ["query_agent_tool_limit", "query_agent_step_limit"].includes(e.code ?? "")) setError(t("agentTrace.limitFailure"));
+    else if (e instanceof ApiError && e.code === "query_agent_no_progress") setError(t("agentTrace.noProgressFailure"));
+    else if (e instanceof ApiError && e.code === "query_agent_invalid_statistics") setError(t("agentTrace.statisticsFailure"));
     else setError(t(history ? "query.historyFailure" : "query.failure"));
   }
   async function generate(event: FormEvent, kind = "answer") {
@@ -193,9 +205,10 @@ export default function QueryPanel({
       seq = ++sequence.current;
     active.current = { controller, kb, id };
     setBusy(true);
-    if (submitted) setTurns(old => [...old, { id: `local-${seq}`, sequence: 0, question: submitted, answer,
+    if (submitted) setTurns(old => [...old, { id: submittedId, sequence: 0, question: submitted, answer,
       status: state || "failed", result: { retrieval: evidence ?? undefined, rerankStatus, unknownReferenceIds: unknown ? ["?"] : [] } }]);
     setSubmitted(kind === "answer" ? question : ""); setAnswer("");
+    setSubmittedId(kind === "answer" ? id : ""); setStatistics([]); setAgentPhase("");
     if (kind === "answer") setQuestion("");
     setEvidence(null);
     setSource(null);
@@ -247,6 +260,8 @@ export default function QueryPanel({
           body,
           (event, data) => {
             if (!current()) return;
+            if (event === "agent_status") setAgentPhase((data as { phase: string }).phase);
+            if (event === "statistics") setStatistics(data as Statistic[]);
             if (event === "metadata")
               setRerankStatus((data as { rerankStatus: string }).rerankStatus);
             if (event === "references") setEvidence(data as Evidence);
@@ -358,12 +373,14 @@ export default function QueryPanel({
           <p className="text-sm font-medium">{t("query.assistant")}</p>
           <div aria-label={t("query.answer")} className="rounded-lg bg-slate-50 p-4 text-sm"><MarkdownAnswer text={turn.answer} /></div>
           <p className="text-sm text-slate-500">{t(`query.states.${turn.status}`)}</p>
+          <button type="button" className="text-sm text-blue-700" onClick={() => setTraceTurn(turn.id)}>{t("agentTrace.view")}</button>
+          <AgentStatistics items={turn.result?.retrieval?.metadata?.statistics} />
           {!!turn.result?.unknownReferenceIds?.length && <p className="text-amber-700">{t("query.unknownCitation")}</p>}
           {turn.result?.rerankStatus && <p className="text-xs text-slate-500">{t(`query.rerankStates.${turn.result.rerankStatus}`)}</p>}
           {turn.result?.retrieval && <details>
             <summary className="cursor-pointer text-sm">{t("retrieval.evidence")}</summary>
             <div className="mt-3 space-y-3">
-              {!turn.result.retrieval.chunks.length && <p className="text-sm text-slate-500">{t("retrieval.noChunks")}</p>}
+              {!turn.result.retrieval.chunks.length && !turn.result.retrieval.metadata?.statistics?.length && <p className="text-sm text-slate-500">{t("retrieval.noChunks")}</p>}
               {turn.result.retrieval.references.map(r => <p key={r.reference_id} className="text-sm">[{r.reference_id}] {r.file_path}</p>)}
               {turn.result.retrieval.chunks.map(c => <div className="rounded-lg bg-slate-50 p-3" key={c.chunk_id}>
                 <p className="whitespace-pre-wrap text-sm">[{c.reference_id}] {c.content}</p>
@@ -402,6 +419,9 @@ export default function QueryPanel({
           {t("query.rerankStates." + rerankStatus)}
         </p>
       )}
+      {busy && agentPhase && <p role="status" className="text-sm text-slate-500">{t(`agentTrace.phases.${agentPhase}`)}</p>}
+      {submittedId && conversation && <button type="button" className="text-sm text-blue-700" onClick={() => setTraceTurn(submittedId)}>{t("agentTrace.view")}</button>}
+      <AgentStatistics items={evidence?.metadata?.statistics ?? statistics} />
       {evidence && (
         <div className="space-y-4 border-t border-slate-100 pt-4">
           <h3 className="font-semibold">{t("retrieval.references")}</h3>
@@ -415,7 +435,7 @@ export default function QueryPanel({
               {t("retrieval.evidence")}
             </summary>
             <ul className="mt-3 space-y-3">
-              {!evidence.chunks.length && <li className="text-sm text-slate-500">{t("retrieval.noChunks")}</li>}
+              {!evidence.chunks.length && !evidence.metadata?.statistics?.length && !statistics.length && <li className="text-sm text-slate-500">{t("retrieval.noChunks")}</li>}
               {evidence.chunks.map((c) => (
                 <li key={c.chunk_id} className="rounded-lg bg-slate-50 p-3">
                   <p className="whitespace-pre-wrap text-sm">
@@ -520,6 +540,7 @@ export default function QueryPanel({
       </div>
       </div>
       </div>
+      {traceTurn && conversation && <AgentTrace kb={kb} conversation={conversation} turn={traceTurn} live={busy && traceTurn === submittedId} close={() => setTraceTurn("")} onSessionExpired={onSessionExpired} />}
       {deleteTarget && <Modal title={t("query.confirmDelete")} busy={false} close={() => setDeleteTarget(null)}>
         <p className="break-words">{t("query.deleteConfirm", { title: deleteTarget.title || t("query.newConversation") })}</p>
         <div className="mt-5 flex justify-end gap-3">

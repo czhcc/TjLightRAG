@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
-export default function Modal({ title, close, busy, children }: { title: string; close: () => void; busy: boolean; children: ReactNode }) {
+export default function Modal({ title, close, busy, children, closeLabel }: { title: string; close: () => void; busy: boolean; children: ReactNode; closeLabel?: string }) {
   const root = useRef<HTMLDivElement>(null);
   const closer = useRef(close); closer.current = close;
   useEffect(() => {
@@ -21,7 +21,10 @@ export default function Modal({ title, close, busy, children }: { title: string;
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <h2 className="mb-5 text-xl font-semibold">{title}</h2>{children}
+      {closeLabel ? <header className="sticky -top-6 z-10 -mx-6 -mt-6 mb-5 flex items-center justify-between gap-4 rounded-t-2xl border-b border-slate-100 bg-white px-6 py-4">
+        <h2 className="text-xl font-semibold">{title}</h2>
+        <button type="button" disabled={busy} onClick={close} className="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40">{closeLabel}</button>
+      </header> : <h2 className="mb-5 text-xl font-semibold">{title}</h2>}{children}
     </div>
   </div>;
 }

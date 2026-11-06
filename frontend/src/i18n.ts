@@ -730,4 +730,26 @@ void i18n.use(initReactI18next).init({
 i18n.on("languageChanged", (language) => {
   document.documentElement.lang = language === "en" ? "en" : "zh-CN";
 });
+i18n.addResourceBundle("zh", "translation", { agentTrace: {
+  title: "智能体调用过程", view: "查看", close: "关闭", timeline: "调用时序", side: "调用内容", request: "请求参数", response: "返回结果",
+  toolsSupported: "已验证原生工具调用", toolsUnsupported: "未验证原生工具调用能力，请检查模型兼容性后用于智能体问答",
+  nativeToolsMissing: "本轮未取得原生工具调用，已要求调用并进行有限重试。请查看调用过程及模型服务的工具调用设置；本轮未生成回答。",
+  limitFailure: "本轮工具调用达到上限，尚未取得有效回答证据。请查看调用过程后重试。", statisticsFailure: "回答中的数量与统计工具结果不一致，本轮未完成。请以统计依据为准后重试。",
+  noProgressFailure: "模型重复调用工具且未取得有效回答证据，本轮已停止。请查看调用过程，检查工具参数或补充问题中的筛选条件。",
+  previous: "上一段", next: "下一段", failure: "调用过程加载失败，请检查权限或连接。", statistics: "统计依据", total: "对象或关系总数", group: "分组", count: "数量", filters: "查询条件",
+  statBasis: "统计当前索引代中按名称和类型合并的对象，或去重的无向关系；同一对象可出现在多个分组，分组数量不能直接相加。",
+  phases: { decision: "正在选择并调用知识库工具…", answer: "正在生成回答…" },
+  states: { running: "正在记录", success: "成功", failed: "失败", cancelled: "已取消", interrupted: "已中断", available: "可查看", incomplete: "记录不完整", not_recorded: "未记录调用内容", expired: "内容已过期", unavailable: "内容暂不可用" },
+} }, true, true);
+i18n.addResourceBundle("en", "translation", { agentTrace: {
+  title: "Agent call trace", view: "View", close: "Close", timeline: "Call timeline", side: "Call content", request: "Request parameters", response: "Response",
+  toolsSupported: "Native tool calls verified", toolsUnsupported: "Native tool calls not verified; check model compatibility before using agent answers",
+  nativeToolsMissing: "No native tool call was returned after explicitly requesting one and retrying within limits. Review the trace and provider tool settings. No answer was generated.",
+  limitFailure: "Tool call limit reached without answer evidence. Review the call trace and retry.", statisticsFailure: "Answer counts did not match statistical evidence. This answer is incomplete; consult the statistical evidence and retry.",
+  noProgressFailure: "The model repeated tool calls without obtaining answer evidence. This turn was stopped. Review the trace, check tool arguments, or clarify the question filters.",
+  previous: "Previous segment", next: "Next segment", failure: "Unable to load the trace. Check access and connection.", statistics: "Statistical evidence", total: "Total objects or relations", group: "Group", count: "Count", filters: "Query filters",
+  statBasis: "Counts extracted objects deduplicated by name and type, or distinct undirected relations in the captured generation. Groups may overlap and must not be summed.",
+  phases: { decision: "Selecting and calling knowledge-base tools…", answer: "Generating answer…" },
+  states: { running: "Recording", success: "Success", failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted", available: "Available", incomplete: "Incomplete trace", not_recorded: "Not recorded", expired: "Content expired", unavailable: "Content unavailable" },
+} }, true, true);
 export default i18n;

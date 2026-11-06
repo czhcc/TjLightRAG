@@ -69,16 +69,30 @@ public class RetrievalService {
       String actor,
       RetrievalRequest request,
       java.util.function.UnaryOperator<List<Chunk>> selector) {
+    return query(kb, actor, request, null, selector);
+  }
+
+  /** Reuses an authorized turn snapshot rather than recapturing the active index. @author czhcc */
+  public Result query(UUID kb, String actor, RetrievalRequest request, Snapshot fixed,
+      java.util.function.UnaryOperator<List<Chunk>> selector) {
+    return query(kb, actor, request, selector, new RetrievalScope(fixed, Long.MAX_VALUE, null, null));
+  }
+
+  /** Carries an explicit parent deadline, model snapshot and provider-call observer. @author czhcc */
+  public Result query(UUID kb, String actor, RetrievalRequest request,
+      java.util.function.UnaryOperator<List<Chunk>> selector, RetrievalScope scope) {
     if (!slots.tryAcquire()) throw new RetrievalFailure("retrieval_busy", 429);
     try {
       if (request == null
           || !validator.validate(request).isEmpty()
           || !Double.isFinite(request.getCosineThreshold())) throw new IllegalArgumentException();
-      long started = System.nanoTime(), deadline = started + timeout * 1000000000L;
+      long started = System.nanoTime(), deadline = Math.min(scope.deadline(), started + timeout * 1000000000L);
       String query = request.getQuery().strip();
       if (tokenizer.encode(query).length > 2048)
         throw new RetrievalFailure("retrieval_query_too_long", 400);
-      Snapshot snapshot = repository.capture(kb, actor);
+      Snapshot snapshot = scope.snapshot() == null ? repository.capture(kb, actor) : scope.snapshot();
+      if (!kb.equals(snapshot.getKnowledgeBaseId())) throw new IllegalArgumentException();
+      repository.check(snapshot, actor);
       if (!snapshot.getTokenizer().equals(tokenizer.getName()))
         throw new RetrievalFailure("retrieval_tokenizer_unsupported", 409);
       ModelVersion embedding = models.version(snapshot.getEmbeddingVersion());
@@ -101,10 +115,9 @@ public class RetrievalService {
           String prompt =
               RetrievalPrompts.format(
                   RetrievalPrompts.load("keywords.txt"), Map.of("query", query));
-          String output =
-              gateway.chat(
-                  bounded(models.version(snapshot.getKeywordVersion()), deadline),
-                  List.of(Map.of("role", "user", "content", prompt)));
+          ModelVersion keywordModel = bounded(scope.keywordModel() == null ? models.version(snapshot.getKeywordVersion()) : scope.keywordModel(), deadline);
+          var keywordMessages = List.of(Map.of("role", "user", "content", prompt));
+          String output = scope.call("keywords", keywordModel, keywordMessages, () -> gateway.chat(keywordModel, keywordMessages));
           keywords = algorithms.keywords(output);
           if (!keywords.isValid()) throw new RetrievalFailure("retrieval_invalid_keywords", 502);
           if (keywords.getHigh().size() > 32
@@ -140,7 +153,8 @@ public class RetrievalService {
       List<String> distinct = new ArrayList<>(new LinkedHashSet<>(needed.values()));
       Map<String, float[]> vectors = new HashMap<>();
       if (!distinct.isEmpty()) {
-        List<float[]> embedded = gateway.embedBatch(bounded(embedding, deadline), distinct);
+        ModelVersion embeddingModel = bounded(embedding, deadline);
+        List<float[]> embedded = scope.call("embedding", embeddingModel, distinct, () -> gateway.embedBatch(embeddingModel, distinct));
         for (var need : needed.entrySet())
           vectors.put(need.getKey(), embedded.get(distinct.indexOf(need.getValue())));
       }
