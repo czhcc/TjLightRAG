@@ -27,379 +27,460 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 @RequiredArgsConstructor
 public class ModelGateway {
-  private final SecretVault vault;
-  private final EndpointPolicy policy;
-  private final RagTokenizer tokenizer;
-  private final JsonMapper json = JsonMapper.builder().build();
-  private final HttpClient client = HttpClient.newBuilder()
-      .version(HttpClient.Version.HTTP_1_1)
-      .connectTimeout(Duration.ofSeconds(10))
-      .followRedirects(HttpClient.Redirect.NEVER).build();
+    private final SecretVault vault;
+    private final EndpointPolicy policy;
+    private final RagTokenizer tokenizer;
+    private final JsonMapper json = JsonMapper.builder().build();
+    private final HttpClient client = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(10))
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
 
-  /** Creates an official Spring AI text client for one immutable version. @author czhcc */
-  public OpenAiChatModel chatModel(ModelVersion version) {
-    if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
-    return chatModel(version, sdkClient(version));
-  }
+    /** Creates an official Spring AI text client for one immutable version. @author czhcc */
+    public OpenAiChatModel chatModel(ModelVersion version) {
+        if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
+        return chatModel(version, sdkClient(version));
+    }
 
-  private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk) {
-    return chatModel(version, sdk, false);
-  }
+    private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk) {
+        return chatModel(version, sdk, false);
+    }
 
-  private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk, boolean jsonObject) {
-    var options = OpenAiChatOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
-            .model(version.getModel()).maxTokens(version.getMaxOutputTokens()).temperature(0.0)
-            .extraBody(extraBody(version))
-            .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0);
-    if (jsonObject) options.responseFormat(OpenAiChatModel.ResponseFormat.builder()
-        .type(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT).build());
-    return OpenAiChatModel.builder().openAiClient(sdk).openAiClientAsync(sdk.async())
-        .options(options.build()).build();
-  }
+    private OpenAiChatModel chatModel(ModelVersion version, OpenAIClient sdk, boolean jsonObject) {
+        var options = OpenAiChatOptions.builder()
+                .baseUrl(version.getBaseUrl())
+                .apiKey("")
+                .model(version.getModel())
+                .maxTokens(version.getMaxOutputTokens())
+                .temperature(0.0)
+                .extraBody(extraBody(version))
+                .timeout(Duration.ofSeconds(version.getTimeoutSeconds()))
+                .maxRetries(0);
+        if (jsonObject)
+            options.responseFormat(OpenAiChatModel.ResponseFormat.builder()
+                    .type(OpenAiChatModel.ResponseFormat.Type.JSON_OBJECT)
+                    .build());
+        return OpenAiChatModel.builder()
+                .openAiClient(sdk)
+                .openAiClientAsync(sdk.async())
+                .options(options.build())
+                .build();
+    }
 
-  private Map<String, Object> extraBody(ModelVersion version) {
-    var parameters = new LinkedHashMap<>(version.getExtraBody());
-    // Spring AI copies the outer map with Map.copyOf, which rejects Java null values.
-    parameters.replaceAll((key, value) -> value == null ? com.openai.core.JsonValue.from((Object) null) : value);
-    return parameters;
-  }
+    private Map<String, Object> extraBody(ModelVersion version) {
+        var parameters = new LinkedHashMap<>(version.getExtraBody());
+        // Spring AI copies the outer map with Map.copyOf, which rejects Java null values.
+        parameters.replaceAll((key, value) -> value == null ? com.openai.core.JsonValue.from((Object) null) : value);
+        return parameters;
+    }
 
-  /** Uses the official client's streaming implementation. @author czhcc */
-  public OpenAiChatModel streamingChatModel(ModelVersion version) { return chatModel(version); }
+    /** Uses the official client's streaming implementation. @author czhcc */
+    public OpenAiChatModel streamingChatModel(ModelVersion version) {
+        return chatModel(version);
+    }
 
-  /** Executes exactly one native tool decision; the application owns the ReAct loop. @author czhcc */
-  public ChatResponse decide(ModelVersion version, Prompt prompt) {
-    return guarded(() -> {
-      if (!(prompt.getOptions() instanceof org.springframework.ai.model.tool.ToolCallingChatOptions tools)) throw new IllegalArgumentException();
-      // Runtime OpenAI option defaults must not erase configured extension parameters.
-      var options = OpenAiChatOptions.builder().model(version.getModel()).maxTokens(version.getMaxOutputTokens()).temperature(0.0)
-          .extraBody(extraBody(version)).timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0)
-          .toolChoice(prompt.getOptions() instanceof OpenAiChatOptions nativeOptions ? nativeOptions.getToolChoice() : null)
-          .toolCallbacks(tools.getToolCallbacks()).parallelToolCalls(false).replayReasoningContent(false).build();
-      ChatResponse response = chatModel(version).call(new Prompt(prompt.getInstructions(), options));
-      if (response == null || response.getResults().size() != 1) throw new ModelFailure("model_invalid_response");
-      String finish = response.getResult().getMetadata().getFinishReason();
-      if (!("stop".equalsIgnoreCase(finish) || "tool_calls".equalsIgnoreCase(finish))) throw new ModelFailure("model_incomplete");
-      return response;
-    });
-  }
+    /** Executes exactly one native tool decision; the application owns the ReAct loop. @author czhcc */
+    public ChatResponse decide(ModelVersion version, Prompt prompt) {
+        return guarded(() -> {
+            if (!(prompt.getOptions() instanceof org.springframework.ai.model.tool.ToolCallingChatOptions tools))
+                throw new IllegalArgumentException();
+            // Runtime OpenAI option defaults must not erase configured extension parameters.
+            var options = OpenAiChatOptions.builder()
+                    .model(version.getModel())
+                    .maxTokens(version.getMaxOutputTokens())
+                    .temperature(0.0)
+                    .extraBody(extraBody(version))
+                    .timeout(Duration.ofSeconds(version.getTimeoutSeconds()))
+                    .maxRetries(0)
+                    .toolChoice(
+                            prompt.getOptions() instanceof OpenAiChatOptions nativeOptions
+                                    ? nativeOptions.getToolChoice()
+                                    : null)
+                    .toolCallbacks(tools.getToolCallbacks())
+                    .parallelToolCalls(false)
+                    .replayReasoningContent(false)
+                    .build();
+            ChatResponse response = chatModel(version).call(new Prompt(prompt.getInstructions(), options));
+            if (response == null || response.getResults().size() != 1) throw new ModelFailure("model_invalid_response");
+            String finish = response.getResult().getMetadata().getFinishReason();
+            if (!("stop".equalsIgnoreCase(finish) || "tool_calls".equalsIgnoreCase(finish)))
+                throw new ModelFailure("model_incomplete");
+            return response;
+        });
+    }
 
-  /** Verifies native tool-call output with an inert probe; printed JSON does not count. @author czhcc */
-  public boolean supportsTools(ModelVersion version) {
-    org.springframework.ai.tool.ToolCallback probe = new org.springframework.ai.tool.ToolCallback() {
-      @Override public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
-        return new org.springframework.ai.tool.definition.DefaultToolDefinition("connection_probe", "Call this inert tool to verify native tool support.", "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}");
-      }
-      @Override public String call(String input) { throw new IllegalStateException("Probe execution is disabled"); }
-    };
-    try {
-      for (int attempt = 0; attempt < 2; attempt++) {
-        var response = decide(version, new Prompt(List.of(new UserMessage("Call connection_probe exactly once with empty arguments. Do not reply with text.")),
-            OpenAiChatOptions.builder().toolCallbacks(probe).toolChoice("required").build()));
-        if (!response.hasToolCalls() || response.getResult().getOutput().getToolCalls().size() != 1) continue;
-        var call = response.getResult().getOutput().getToolCalls().getFirst();
-        if (call.name().equals("connection_probe") && json.readTree(call.arguments()).isObject() && json.readTree(call.arguments()).isEmpty()) return true;
-      }
-      return false;
-    } catch (RuntimeException unsupported) { return false; }
-  }
-
-  /** Creates an official Spring AI embedding client for the captured vector space. @author czhcc */
-  public OpenAiEmbeddingModel embeddingModel(ModelVersion version) {
-    if (!version.getKind().equals("EMBEDDING")) throw new IllegalArgumentException();
-    return OpenAiEmbeddingModel.builder().openAiClient(sdkClient(version)).metadataMode(MetadataMode.NONE)
-        .options(OpenAiEmbeddingOptions.builder().baseUrl(version.getBaseUrl()).apiKey("")
-            .model(version.getModel()).encodingFormat(OpenAiEmbeddingOptions.EncodingFormat.FLOAT)
-            .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).build())
-        .build();
-  }
-
-  private OpenAIClient sdkClient(ModelVersion version) {
-    return sdkClient(version, null);
-  }
-
-  private OpenAIClient sdkClient(ModelVersion version, SpringAiTransport transport) {
-    policy.validate(version.getBaseUrl());
-    String key = vault.decrypt(version.getCipher(), version.getProfileId());
-    var options = ClientOptions.builder().baseUrl(version.getBaseUrl())
-        .apiKey(key.isEmpty() ? "unused-no-auth" : key)
-        .httpClient(transport == null ? new SpringAiTransport(version.getTimeoutSeconds(), key.isEmpty()) : transport)
-        .timeout(Duration.ofSeconds(version.getTimeoutSeconds())).maxRetries(0).logLevel(LogLevel.OFF)
-        .build();
-    return new OpenAIClientImpl(options);
-  }
-
-  /** Calls the configured text model and verifies a complete, nonempty answer. @author czhcc */
-  public String chat(ModelVersion version, List<Map<String, String>> messages) {
-    Prompt prompt = prompt(version, messages);
-    return guarded(() -> {
-      var response = chatModel(version).call(prompt);
-      if (response == null || response.getResults().size() != 1)
-        throw new ModelFailure("model_truncated_or_invalid");
-      var generation = response.getResult();
-      if (!"stop".equalsIgnoreCase(generation.getMetadata().getFinishReason()))
-        throw new ModelFailure("model_truncated_or_invalid");
-      String text = generation.getOutput().getText();
-      if (text == null || text.isBlank() || text.length() > 2000000)
-        throw new ModelFailure("model_empty_or_oversize");
-      return text;
-    });
-  }
-
-  private Prompt prompt(ModelVersion version, List<Map<String, String>> messages) {
-    if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
-    int tokens = messages.stream().mapToInt(m -> tokenizer.encode(m.get("content")).length + 8).sum() + 16;
-    if (tokens + version.getMaxOutputTokens() > version.getContextTokens())
-      throw new ModelFailure("model_context_exceeded");
-    List<Message> list = messages.stream().<Message>map(m -> switch (m.get("role")) {
-      case "system" -> new SystemMessage(m.get("content"));
-      case "assistant" -> new AssistantMessage(m.get("content"));
-      default -> new UserMessage(m.get("content"));
-    }).toList();
-    return new Prompt(list);
-  }
-
-  /** Propagates provider deltas and rejects incomplete, failed or cancelled streams. @author czhcc */
-  public void stream(ModelVersion version, List<Map<String, String>> messages,
-      java.util.function.Consumer<String> delta) {
-    stream(version, messages, delta, () -> {});
-  }
-
-  /** Checks cancellation and lease validity even while the provider is idle. @author czhcc */
-  public void stream(ModelVersion version, List<Map<String, String>> messages,
-      java.util.function.Consumer<String> delta, Runnable check) {
-    stream(version, messages, delta, check, false);
-  }
-
-  /** Requests JSON object output for extraction while preserving streaming and lease checks. @author czhcc */
-  public void streamJson(ModelVersion version, List<Map<String, String>> messages,
-      java.util.function.Consumer<String> delta, Runnable check) {
-    stream(version, messages, delta, check, true);
-  }
-
-  private void stream(ModelVersion version, List<Map<String, String>> messages,
-      java.util.function.Consumer<String> delta, Runnable check, boolean jsonObject) {
-    stream(version, messages, delta, check, jsonObject, ignored -> {});
-  }
-
-  /** Exposes public provider usage/finish metadata without reasoning or transport credentials. @author czhcc */
-  public void streamDetailed(ModelVersion version, List<Map<String, String>> messages,
-      java.util.function.Consumer<String> delta, Runnable check, java.util.function.Consumer<Map<String, Object>> metrics) {
-    stream(version, messages, delta, check, false, metrics);
-  }
-
-  private void stream(ModelVersion version, List<Map<String, String>> messages,
-      java.util.function.Consumer<String> delta, Runnable check, boolean jsonObject, java.util.function.Consumer<Map<String, Object>> metrics) {
-    check.run();
-    Prompt prompt = prompt(version, messages);
-    guarded(() -> {
-      var stopped = new java.util.concurrent.atomic.AtomicBoolean();
-      var content = new java.util.concurrent.atomic.AtomicBoolean();
-      try (var transport = new SpringAiTransport(version.getTimeoutSeconds(),
-          vault.decrypt(version.getCipher(), version.getProfileId()).isEmpty(), true)) {
-      chatModel(version, sdkClient(version, transport), jsonObject).stream(prompt)
-          .doOnNext(response -> {
-            var usage = response.getMetadata().getUsage();
-            if (usage != null && usage.getTotalTokens() != null && usage.getTotalTokens() > 0)
-              metrics.accept(Map.of("usage", json.convertValue(usage, Map.class)));
-            if (response.getResults().isEmpty()) return;
-            if (response.getResults().size() != 1) throw new ModelFailure("model_stream_invalid");
-            var generation = response.getResult();
-            String finish = generation.getMetadata().getFinishReason();
-            String text = generation.getOutput().getText();
-            if (finish != null && !finish.isBlank() && !"stop".equalsIgnoreCase(finish))
-              throw new ModelFailure("model_truncated_or_invalid");
-            if (text != null && !text.isEmpty()) {
-              if (stopped.get()) throw new ModelFailure("model_stream_invalid");
-              content.set(true);
-              delta.accept(text);
+    /** Verifies native tool-call output with an inert probe; printed JSON does not count. @author czhcc */
+    public boolean supportsTools(ModelVersion version) {
+        org.springframework.ai.tool.ToolCallback probe = new org.springframework.ai.tool.ToolCallback() {
+            @Override
+            public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+                return new org.springframework.ai.tool.definition.DefaultToolDefinition(
+                        "connection_probe",
+                        "Call this inert tool to verify native tool support.",
+                        "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}");
             }
-            if ("stop".equalsIgnoreCase(finish)) stopped.set(true);
-            if (finish != null && !finish.isBlank()) metrics.accept(Map.of("finishReason", finish));
-          })
-          .concatWith(Flux.defer(() -> stopped.get() && content.get() ? Flux.empty()
-              : Flux.error(new ModelFailure("model_stream_incomplete"))))
-          .doOnCancel(transport::close)
-          .takeUntilOther(Flux.interval(Duration.ofSeconds(1)).doOnNext(ignored -> check.run()).then())
-          .timeout(Duration.ofSeconds(version.getTimeoutSeconds()), Flux.error(new ModelFailure("model_timeout")))
-          .doFinally(signal -> transport.close())
-          .blockLast();
-      }
-      return null;
-    });
-  }
 
-  /** Generates one validated vector using the saved embedding version. @author czhcc */
-  public float[] embed(ModelVersion version, String text) { return embedBatch(version, List.of(text)).getFirst(); }
-
-  /** Batches query vectors without changing the generation's embedding configuration. @author czhcc */
-  public List<float[]> embedBatch(ModelVersion version, List<String> texts) {
-    if (!version.getKind().equals("EMBEDDING") || texts.isEmpty() || texts.size() > 16)
-      throw new IllegalArgumentException();
-    for (String text : texts)
-      if (tokenizer.encode(text).length > version.getContextTokens())
-        throw new ModelFailure("embedding_context_exceeded");
-    return guarded(() -> {
-      var response = embeddingModel(version).call(new EmbeddingRequest(texts, null));
-      if (response.getResults().size() != texts.size()) throw new ModelFailure("embedding_invalid");
-      var ordered = new float[texts.size()][];
-      for (var row : response.getResults()) {
-        int index = row.getIndex();
-        float[] vector = row.getOutput();
-        if (index < 0 || index >= texts.size() || ordered[index] != null
-            || vector.length != version.getDimensions()) throw new ModelFailure("embedding_dimension_mismatch");
-        double norm = 0;
-        for (float value : vector) {
-          if (!Float.isFinite(value)) throw new ModelFailure("embedding_invalid");
-          norm += (double) value * value;
+            @Override
+            public String call(String input) {
+                throw new IllegalStateException("Probe execution is disabled");
+            }
+        };
+        try {
+            for (int attempt = 0; attempt < 2; attempt++) {
+                var response = decide(
+                        version,
+                        new Prompt(
+                                List.of(
+                                        new UserMessage(
+                                                "Call connection_probe exactly once with empty arguments. Do not reply with text.")),
+                                OpenAiChatOptions.builder()
+                                        .toolCallbacks(probe)
+                                        .toolChoice("required")
+                                        .build()));
+                if (!response.hasToolCalls()
+                        || response.getResult().getOutput().getToolCalls().size() != 1) continue;
+                var call = response.getResult().getOutput().getToolCalls().getFirst();
+                if (call.name().equals("connection_probe")
+                        && json.readTree(call.arguments()).isObject()
+                        && json.readTree(call.arguments()).isEmpty()) return true;
+            }
+            return false;
+        } catch (RuntimeException unsupported) {
+            return false;
         }
-        if (norm == 0) throw new ModelFailure("embedding_invalid");
-        ordered[index] = vector;
-      }
-      return Arrays.asList(ordered);
-    });
-  }
-
-  private <T> T guarded(Supplier<T> action) {
-    try {
-      return action.get();
-    } catch (RuntimeException error) {
-      for (Throwable cause = error; cause != null; cause = cause.getCause()) {
-        if (cause instanceof ModelFailure failure) throw failure;
-        if (cause instanceof java.io.InterruptedIOException || cause instanceof java.util.concurrent.TimeoutException)
-          throw new ModelFailure("model_timeout");
-      }
-      throw new ModelFailure(Thread.currentThread().isInterrupted() ? "model_interrupted" : "model_unavailable");
-    }
-  }
-
-  /**
-   * Calls a bounded compatible rerank endpoint with strict index and score validation. @author
-   * agent
-   */
-  public List<Map<String, Object>> rerank(ModelVersion v, String query, List<String> documents) {
-    if (!v.getKind().equals("RERANK") || documents.isEmpty() || documents.size() > 500)
-      throw new IllegalArgumentException();
-    var response =
-        post(
-            v,
-            "/rerank",
-            Map.of(
-                "model",
-                v.getModel(),
-                "query",
-                query,
-                "documents",
-                documents,
-                "top_n",
-                documents.size()));
-    var results = response.path("results");
-    if (!results.isArray() || results.isEmpty() || results.size() > documents.size())
-      throw new ModelFailure("rerank_invalid");
-    Set<Integer> seen = new HashSet<>();
-    List<Map<String, Object>> rows = new ArrayList<>();
-    for (var r : results) {
-      int index = r.path("index").isIntegralNumber() ? r.path("index").asInt(-1) : -1;
-      double score =
-          r.path("relevance_score").isNumber()
-              ? r.path("relevance_score").asDouble(Double.NaN)
-              : Double.NaN;
-      if (index < 0 || index >= documents.size() || !seen.add(index) || !Double.isFinite(score))
-        throw new ModelFailure("rerank_invalid");
-      rows.add(Map.of("index", index, "score", score));
-    }
-    return rows;
-  }
-
-  private JsonNode post(ModelVersion v, String suffix, Map<String, ?> body) {
-    policy.validate(v.getBaseUrl());
-    java.util.concurrent.CompletableFuture<HttpResponse<byte[]>> requestFuture = null;
-    try {
-      var builder =
-          HttpRequest.newBuilder(URI.create(v.getBaseUrl() + suffix))
-              .timeout(Duration.ofSeconds(v.getTimeoutSeconds()))
-              .header("Content-Type", "application/json");
-      String key = vault.decrypt(v.getCipher(), v.getProfileId());
-      if (!key.isEmpty()) builder.header("Authorization", "Bearer " + key);
-      requestFuture =
-          client.sendAsync(
-              builder
-                  .POST(
-                      HttpRequest.BodyPublishers.ofString(
-                          json.writeValueAsString(body), StandardCharsets.UTF_8))
-                  .build(),
-              info -> new BoundedBody());
-      var response =
-          requestFuture.get(v.getTimeoutSeconds(), java.util.concurrent.TimeUnit.SECONDS);
-      if (response.statusCode() < 200 || response.statusCode() > 299)
-        throw new ModelFailure(
-            response.statusCode() == 429 ? "model_rate_limited" : "model_http_error");
-      return json.readTree(response.body());
-    } catch (ModelFailure e) {
-      throw e;
-    } catch (java.util.concurrent.TimeoutException e) {
-      throw new ModelFailure("model_timeout");
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new ModelFailure("model_interrupted");
-    } catch (Exception e) {
-      Throwable cause = e;
-      while (cause.getCause() != null) cause = cause.getCause();
-      if (cause instanceof ModelFailure m) throw m;
-      throw new ModelFailure("model_unavailable");
-    } finally {
-      if (requestFuture != null && !requestFuture.isDone()) requestFuture.cancel(true);
-    }
-  }
-
-  /**
-   * Bounded subscriber prevents untrusted provider payloads from exhausting memory. @author agent
-   */
-  private static class BoundedBody implements HttpResponse.BodySubscriber<byte[]> {
-    private final java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
-    private final java.util.concurrent.CompletableFuture<byte[]> result =
-        new java.util.concurrent.CompletableFuture<>();
-    private java.util.concurrent.Flow.Subscription subscription;
-
-    /** Exposes bounded body completion. @author agent */
-    @Override
-    public java.util.concurrent.CompletionStage<byte[]> getBody() {
-      return result;
     }
 
-    /** Requests one body segment at a time. @author agent */
-    @Override
-    public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
-      subscription = s;
-      s.request(1);
+    /** Creates an official Spring AI embedding client for the captured vector space. @author czhcc */
+    public OpenAiEmbeddingModel embeddingModel(ModelVersion version) {
+        if (!version.getKind().equals("EMBEDDING")) throw new IllegalArgumentException();
+        return OpenAiEmbeddingModel.builder()
+                .openAiClient(sdkClient(version))
+                .metadataMode(MetadataMode.NONE)
+                .options(OpenAiEmbeddingOptions.builder()
+                        .baseUrl(version.getBaseUrl())
+                        .apiKey("")
+                        .model(version.getModel())
+                        .encodingFormat(OpenAiEmbeddingOptions.EncodingFormat.FLOAT)
+                        .timeout(Duration.ofSeconds(version.getTimeoutSeconds()))
+                        .maxRetries(0)
+                        .build())
+                .build();
     }
 
-    /** Cancels immediately on the four MiB response ceiling. @author agent */
-    @Override
-    public void onNext(List<java.nio.ByteBuffer> buffers) {
-      for (var b : buffers) {
-        if ((long) bytes.size() + b.remaining() > 4 * 1024 * 1024) {
-          subscription.cancel();
-          result.completeExceptionally(new ModelFailure("model_response_oversize"));
-          return;
+    private OpenAIClient sdkClient(ModelVersion version) {
+        return sdkClient(version, null);
+    }
+
+    private OpenAIClient sdkClient(ModelVersion version, SpringAiTransport transport) {
+        policy.validate(version.getBaseUrl());
+        String key = vault.decrypt(version.getCipher(), version.getProfileId());
+        var options = ClientOptions.builder()
+                .baseUrl(version.getBaseUrl())
+                .apiKey(key.isEmpty() ? "unused-no-auth" : key)
+                .httpClient(
+                        transport == null
+                                ? new SpringAiTransport(version.getTimeoutSeconds(), key.isEmpty())
+                                : transport)
+                .timeout(Duration.ofSeconds(version.getTimeoutSeconds()))
+                .maxRetries(0)
+                .logLevel(LogLevel.OFF)
+                .build();
+        return new OpenAIClientImpl(options);
+    }
+
+    /** Calls the configured text model and verifies a complete, nonempty answer. @author czhcc */
+    public String chat(ModelVersion version, List<Map<String, String>> messages) {
+        Prompt prompt = prompt(version, messages);
+        return guarded(() -> {
+            var response = chatModel(version).call(prompt);
+            if (response == null || response.getResults().size() != 1)
+                throw new ModelFailure("model_truncated_or_invalid");
+            var generation = response.getResult();
+            if (!"stop".equalsIgnoreCase(generation.getMetadata().getFinishReason()))
+                throw new ModelFailure("model_truncated_or_invalid");
+            String text = generation.getOutput().getText();
+            if (text == null || text.isBlank() || text.length() > 2000000)
+                throw new ModelFailure("model_empty_or_oversize");
+            return text;
+        });
+    }
+
+    private Prompt prompt(ModelVersion version, List<Map<String, String>> messages) {
+        if (!version.getKind().equals("CHAT")) throw new IllegalArgumentException();
+        int tokens = messages.stream()
+                        .mapToInt(m -> tokenizer.encode(m.get("content")).length + 8)
+                        .sum()
+                + 16;
+        if (tokens + version.getMaxOutputTokens() > version.getContextTokens())
+            throw new ModelFailure("model_context_exceeded");
+        List<Message> list = messages.stream()
+                .<Message>map(m -> switch (m.get("role")) {
+                    case "system" -> new SystemMessage(m.get("content"));
+                    case "assistant" -> new AssistantMessage(m.get("content"));
+                    default -> new UserMessage(m.get("content"));
+                })
+                .toList();
+        return new Prompt(list);
+    }
+
+    /** Propagates provider deltas and rejects incomplete, failed or cancelled streams. @author czhcc */
+    public void stream(
+            ModelVersion version, List<Map<String, String>> messages, java.util.function.Consumer<String> delta) {
+        stream(version, messages, delta, () -> {});
+    }
+
+    /** Checks cancellation and lease validity even while the provider is idle. @author czhcc */
+    public void stream(
+            ModelVersion version,
+            List<Map<String, String>> messages,
+            java.util.function.Consumer<String> delta,
+            Runnable check) {
+        stream(version, messages, delta, check, false);
+    }
+
+    /** Requests JSON object output for extraction while preserving streaming and lease checks. @author czhcc */
+    public void streamJson(
+            ModelVersion version,
+            List<Map<String, String>> messages,
+            java.util.function.Consumer<String> delta,
+            Runnable check) {
+        stream(version, messages, delta, check, true);
+    }
+
+    private void stream(
+            ModelVersion version,
+            List<Map<String, String>> messages,
+            java.util.function.Consumer<String> delta,
+            Runnable check,
+            boolean jsonObject) {
+        stream(version, messages, delta, check, jsonObject, ignored -> {});
+    }
+
+    /** Exposes public provider usage/finish metadata without reasoning or transport credentials. @author czhcc */
+    public void streamDetailed(
+            ModelVersion version,
+            List<Map<String, String>> messages,
+            java.util.function.Consumer<String> delta,
+            Runnable check,
+            java.util.function.Consumer<Map<String, Object>> metrics) {
+        stream(version, messages, delta, check, false, metrics);
+    }
+
+    private void stream(
+            ModelVersion version,
+            List<Map<String, String>> messages,
+            java.util.function.Consumer<String> delta,
+            Runnable check,
+            boolean jsonObject,
+            java.util.function.Consumer<Map<String, Object>> metrics) {
+        check.run();
+        Prompt prompt = prompt(version, messages);
+        guarded(() -> {
+            var stopped = new java.util.concurrent.atomic.AtomicBoolean();
+            var content = new java.util.concurrent.atomic.AtomicBoolean();
+            try (var transport = new SpringAiTransport(
+                    version.getTimeoutSeconds(),
+                    vault.decrypt(version.getCipher(), version.getProfileId()).isEmpty(),
+                    true)) {
+                chatModel(version, sdkClient(version, transport), jsonObject).stream(prompt)
+                        .doOnNext(response -> {
+                            var usage = response.getMetadata().getUsage();
+                            if (usage != null && usage.getTotalTokens() != null && usage.getTotalTokens() > 0)
+                                metrics.accept(Map.of("usage", json.convertValue(usage, Map.class)));
+                            if (response.getResults().isEmpty()) return;
+                            if (response.getResults().size() != 1) throw new ModelFailure("model_stream_invalid");
+                            var generation = response.getResult();
+                            String finish = generation.getMetadata().getFinishReason();
+                            String text = generation.getOutput().getText();
+                            if (finish != null && !finish.isBlank() && !"stop".equalsIgnoreCase(finish))
+                                throw new ModelFailure("model_truncated_or_invalid");
+                            if (text != null && !text.isEmpty()) {
+                                if (stopped.get()) throw new ModelFailure("model_stream_invalid");
+                                content.set(true);
+                                delta.accept(text);
+                            }
+                            if ("stop".equalsIgnoreCase(finish)) stopped.set(true);
+                            if (finish != null && !finish.isBlank()) metrics.accept(Map.of("finishReason", finish));
+                        })
+                        .concatWith(Flux.defer(() -> stopped.get() && content.get()
+                                ? Flux.empty()
+                                : Flux.error(new ModelFailure("model_stream_incomplete"))))
+                        .doOnCancel(transport::close)
+                        .takeUntilOther(Flux.interval(Duration.ofSeconds(1))
+                                .doOnNext(ignored -> check.run())
+                                .then())
+                        .timeout(
+                                Duration.ofSeconds(version.getTimeoutSeconds()),
+                                Flux.error(new ModelFailure("model_timeout")))
+                        .doFinally(signal -> transport.close())
+                        .blockLast();
+            }
+            return null;
+        });
+    }
+
+    /** Generates one validated vector using the saved embedding version. @author czhcc */
+    public float[] embed(ModelVersion version, String text) {
+        return embedBatch(version, List.of(text)).getFirst();
+    }
+
+    /** Batches query vectors without changing the generation's embedding configuration. @author czhcc */
+    public List<float[]> embedBatch(ModelVersion version, List<String> texts) {
+        if (!version.getKind().equals("EMBEDDING") || texts.isEmpty() || texts.size() > 16)
+            throw new IllegalArgumentException();
+        for (String text : texts)
+            if (tokenizer.encode(text).length > version.getContextTokens())
+                throw new ModelFailure("embedding_context_exceeded");
+        return guarded(() -> {
+            var response = embeddingModel(version).call(new EmbeddingRequest(texts, null));
+            if (response.getResults().size() != texts.size()) throw new ModelFailure("embedding_invalid");
+            var ordered = new float[texts.size()][];
+            for (var row : response.getResults()) {
+                int index = row.getIndex();
+                float[] vector = row.getOutput();
+                if (index < 0
+                        || index >= texts.size()
+                        || ordered[index] != null
+                        || vector.length != version.getDimensions())
+                    throw new ModelFailure("embedding_dimension_mismatch");
+                double norm = 0;
+                for (float value : vector) {
+                    if (!Float.isFinite(value)) throw new ModelFailure("embedding_invalid");
+                    norm += (double) value * value;
+                }
+                if (norm == 0) throw new ModelFailure("embedding_invalid");
+                ordered[index] = vector;
+            }
+            return Arrays.asList(ordered);
+        });
+    }
+
+    private <T> T guarded(Supplier<T> action) {
+        try {
+            return action.get();
+        } catch (RuntimeException error) {
+            for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+                if (cause instanceof ModelFailure failure) throw failure;
+                if (cause instanceof java.io.InterruptedIOException
+                        || cause instanceof java.util.concurrent.TimeoutException)
+                    throw new ModelFailure("model_timeout");
+            }
+            throw new ModelFailure(Thread.currentThread().isInterrupted() ? "model_interrupted" : "model_unavailable");
         }
-        byte[] part = new byte[b.remaining()];
-        b.get(part);
-        bytes.writeBytes(part);
-      }
-      subscription.request(1);
     }
 
-    /** Propagates transport failures to the sanitized boundary. @author agent */
-    @Override
-    public void onError(Throwable e) {
-      result.completeExceptionally(e);
+    /**
+     * Calls a bounded compatible rerank endpoint with strict index and score validation. @author
+     * agent
+     */
+    public List<Map<String, Object>> rerank(ModelVersion v, String query, List<String> documents) {
+        if (!v.getKind().equals("RERANK") || documents.isEmpty() || documents.size() > 500)
+            throw new IllegalArgumentException();
+        var response = post(
+                v,
+                "/rerank",
+                Map.of("model", v.getModel(), "query", query, "documents", documents, "top_n", documents.size()));
+        var results = response.path("results");
+        if (!results.isArray() || results.isEmpty() || results.size() > documents.size())
+            throw new ModelFailure("rerank_invalid");
+        Set<Integer> seen = new HashSet<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (var r : results) {
+            int index = r.path("index").isIntegralNumber() ? r.path("index").asInt(-1) : -1;
+            double score = r.path("relevance_score").isNumber()
+                    ? r.path("relevance_score").asDouble(Double.NaN)
+                    : Double.NaN;
+            if (index < 0 || index >= documents.size() || !seen.add(index) || !Double.isFinite(score))
+                throw new ModelFailure("rerank_invalid");
+            rows.add(Map.of("index", index, "score", score));
+        }
+        return rows;
     }
 
-    /** Completes with the fully bounded body. @author agent */
-    @Override
-    public void onComplete() {
-      result.complete(bytes.toByteArray());
+    private JsonNode post(ModelVersion v, String suffix, Map<String, ?> body) {
+        policy.validate(v.getBaseUrl());
+        java.util.concurrent.CompletableFuture<HttpResponse<byte[]>> requestFuture = null;
+        try {
+            var builder = HttpRequest.newBuilder(URI.create(v.getBaseUrl() + suffix))
+                    .timeout(Duration.ofSeconds(v.getTimeoutSeconds()))
+                    .header("Content-Type", "application/json");
+            String key = vault.decrypt(v.getCipher(), v.getProfileId());
+            if (!key.isEmpty()) builder.header("Authorization", "Bearer " + key);
+            requestFuture = client.sendAsync(
+                    builder.POST(HttpRequest.BodyPublishers.ofString(
+                                    json.writeValueAsString(body), StandardCharsets.UTF_8))
+                            .build(),
+                    info -> new BoundedBody());
+            var response = requestFuture.get(v.getTimeoutSeconds(), java.util.concurrent.TimeUnit.SECONDS);
+            if (response.statusCode() < 200 || response.statusCode() > 299)
+                throw new ModelFailure(response.statusCode() == 429 ? "model_rate_limited" : "model_http_error");
+            return json.readTree(response.body());
+        } catch (ModelFailure e) {
+            throw e;
+        } catch (java.util.concurrent.TimeoutException e) {
+            throw new ModelFailure("model_timeout");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ModelFailure("model_interrupted");
+        } catch (Exception e) {
+            Throwable cause = e;
+            while (cause.getCause() != null) cause = cause.getCause();
+            if (cause instanceof ModelFailure m) throw m;
+            throw new ModelFailure("model_unavailable");
+        } finally {
+            if (requestFuture != null && !requestFuture.isDone()) requestFuture.cancel(true);
+        }
     }
-  }
+
+    /**
+     * Bounded subscriber prevents untrusted provider payloads from exhausting memory. @author agent
+     */
+    private static class BoundedBody implements HttpResponse.BodySubscriber<byte[]> {
+        private final java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        private final java.util.concurrent.CompletableFuture<byte[]> result =
+                new java.util.concurrent.CompletableFuture<>();
+        private java.util.concurrent.Flow.Subscription subscription;
+
+        /** Exposes bounded body completion. @author agent */
+        @Override
+        public java.util.concurrent.CompletionStage<byte[]> getBody() {
+            return result;
+        }
+
+        /** Requests one body segment at a time. @author agent */
+        @Override
+        public void onSubscribe(java.util.concurrent.Flow.Subscription s) {
+            subscription = s;
+            s.request(1);
+        }
+
+        /** Cancels immediately on the four MiB response ceiling. @author agent */
+        @Override
+        public void onNext(List<java.nio.ByteBuffer> buffers) {
+            for (var b : buffers) {
+                if ((long) bytes.size() + b.remaining() > 4 * 1024 * 1024) {
+                    subscription.cancel();
+                    result.completeExceptionally(new ModelFailure("model_response_oversize"));
+                    return;
+                }
+                byte[] part = new byte[b.remaining()];
+                b.get(part);
+                bytes.writeBytes(part);
+            }
+            subscription.request(1);
+        }
+
+        /** Propagates transport failures to the sanitized boundary. @author agent */
+        @Override
+        public void onError(Throwable e) {
+            result.completeExceptionally(e);
+        }
+
+        /** Completes with the fully bounded body. @author agent */
+        @Override
+        public void onComplete() {
+            result.complete(bytes.toByteArray());
+        }
+    }
 }

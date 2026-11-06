@@ -11,8 +11,8 @@ import lombok.*;
 @Getter
 @AllArgsConstructor
 public class KnowledgeBaseView {
-  private final UUID id;
-  private final String name;
-  private final String description;
-  private final KnowledgeRole role;
+    private final UUID id;
+    private final String name;
+    private final String description;
+    private final KnowledgeRole role;
 }

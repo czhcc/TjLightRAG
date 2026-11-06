@@ -17,9 +17,9 @@ import lombok.*;
 @AllArgsConstructor
 @EqualsAndHashCode
 public class ScopedRevisionId implements Serializable {
-  @Column(name = "knowledge_base_id")
-  private UUID knowledgeBaseId;
+    @Column(name = "knowledge_base_id")
+    private UUID knowledgeBaseId;
 
-  @Column(name = "id")
-  private UUID id;
+    @Column(name = "id")
+    private UUID id;
 }

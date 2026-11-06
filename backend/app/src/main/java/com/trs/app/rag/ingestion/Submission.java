@@ -13,8 +13,8 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class Submission {
-  private java.util.UUID documentId;
-  private java.util.UUID revisionId;
-  private java.util.UUID jobId;
-  private boolean duplicate;
+    private java.util.UUID documentId;
+    private java.util.UUID revisionId;
+    private java.util.UUID jobId;
+    private boolean duplicate;
 }

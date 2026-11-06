@@ -11,6 +11,6 @@ import lombok.*;
 @Getter
 @AllArgsConstructor
 public class VectorHit {
-  private final UUID objectId;
-  private final double similarity;
+    private final UUID objectId;
+    private final double similarity;
 }

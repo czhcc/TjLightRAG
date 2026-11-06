@@ -10,16 +10,16 @@ import lombok.*;
 @Setter
 @NoArgsConstructor
 public class UserAccount {
-  @Id
-  @GeneratedValue(strategy = GenerationType.IDENTITY)
-  private Long id;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-  @Column(nullable = false, unique = true, length = 100)
-  private String username;
+    @Column(nullable = false, unique = true, length = 100)
+    private String username;
 
-  @Column(name = "is_admin", nullable = false)
-  private boolean admin;
+    @Column(name = "is_admin", nullable = false)
+    private boolean admin;
 
-  @Column(name = "password_hash", nullable = false, length = 100)
-  private String passwordHash;
+    @Column(name = "password_hash", nullable = false, length = 100)
+    private String passwordHash;
 }

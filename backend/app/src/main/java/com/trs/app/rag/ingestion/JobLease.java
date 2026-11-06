@@ -13,10 +13,10 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class JobLease {
-  private java.util.UUID id;
-  private java.util.UUID kbId;
-  private java.util.UUID revisionId;
-  private java.util.UUID token;
-  private String actor;
-  private int attempts;
+    private java.util.UUID id;
+    private java.util.UUID kbId;
+    private java.util.UUID revisionId;
+    private java.util.UUID token;
+    private String actor;
+    private int attempts;
 }

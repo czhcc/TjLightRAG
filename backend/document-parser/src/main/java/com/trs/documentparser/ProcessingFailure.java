@@ -9,15 +9,15 @@ import lombok.Getter;
  */
 @Getter
 public class ProcessingFailure extends RuntimeException {
-  private final String code;
+    private final String code;
 
-  /**
-   * Initializes ProcessingFailure for the document pipeline.
-   *
-   * @author czhcc
-   */
-  public ProcessingFailure(String code) {
-    super(code);
-    this.code = code;
-  }
+    /**
+     * Initializes ProcessingFailure for the document pipeline.
+     *
+     * @author czhcc
+     */
+    public ProcessingFailure(String code) {
+        super(code);
+        this.code = code;
+    }
 }

@@ -12,10 +12,10 @@ import lombok.*;
 @Setter
 @NoArgsConstructor
 public class KnowledgeBaseRequest {
-  @NotBlank
-  @Size(max = 100)
-  private String name;
+    @NotBlank
+    @Size(max = 100)
+    private String name;
 
-  @Size(max = 4000)
-  private String description = "";
+    @Size(max = 4000)
+    private String description = "";
 }

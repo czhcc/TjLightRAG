@@ -11,13 +11,13 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration(proxyBeanMethods = false)
 public class DocumentParsingConfiguration {
-  /**
-   * Creates the source-preserving TXT and Markdown parser.
-   *
-   * @author czhcc
-   */
-  @Bean
-  public DocumentParser documentParser() {
-    return new DocumentParser();
-  }
+    /**
+     * Creates the source-preserving TXT and Markdown parser.
+     *
+     * @author czhcc
+     */
+    @Bean
+    public DocumentParser documentParser() {
+        return new DocumentParser();
+    }
 }

@@ -13,6 +13,6 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ParsedDocument {
-  private String text;
-  private java.util.List<HeadingRef> headings;
+    private String text;
+    private java.util.List<HeadingRef> headings;
 }

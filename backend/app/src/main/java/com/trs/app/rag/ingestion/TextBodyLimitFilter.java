@@ -16,113 +16,111 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 @Order(0)
 public class TextBodyLimitFilter extends OncePerRequestFilter {
-  public static final int LIMIT = 6 * 1024 * 1024;
-  public static final int RETRIEVAL_LIMIT = 256 * 1024;
-
-  /**
-   * Buffers bounded text/query endpoints; multipart remains streaming under Spring's own cap.
-   *
-   * @author agent
-   */
-  @Override
-  protected void doFilterInternal(
-      HttpServletRequest request, HttpServletResponse response, FilterChain chain)
-      throws ServletException, IOException {
-    String path = request.getRequestURI().substring(request.getContextPath().length());
-    boolean retrieval =
-        path.endsWith("/retrieval")
-            || path.endsWith("/query")
-            || path.endsWith("/query/stream")
-            || path.matches(".*/query/[^/]+/cancel");
-    if (!path.startsWith("/api/knowledge-bases/")
-        || !request.getMethod().equals("POST")
-        || !(retrieval || path.endsWith("/documents/text"))) {
-      chain.doFilter(request, response);
-      return;
-    }
-    int limit = retrieval ? RETRIEVAL_LIMIT : LIMIT;
-    String code = retrieval ? "retrieval_request_too_large" : "document_too_large";
-    if (request.getContentLengthLong() > limit) {
-      tooLarge(response, code);
-      return;
-    }
-    byte[] bytes = request.getInputStream().readNBytes(limit + 1);
-    if (bytes.length > limit) {
-      tooLarge(response, code);
-      return;
-    }
-    chain.doFilter(new BufferedRequest(request, bytes), response);
-  }
-
-  private void tooLarge(HttpServletResponse response, String code) throws IOException {
-    response.setStatus(413);
-    response.setContentType("application/json");
-    response.setCharacterEncoding("UTF-8");
-    response.getWriter().write("{\"error\":\"" + code + "\"}");
-  }
-
-  /**
-   * Replays a validated bounded body without retaining it outside the request.
-   *
-   * @author agent
-   */
-  private static class BufferedRequest extends HttpServletRequestWrapper {
-    private final byte[] bytes;
-
-    BufferedRequest(HttpServletRequest original, byte[] bytes) {
-      super(original);
-      this.bytes = bytes;
-    }
+    public static final int LIMIT = 6 * 1024 * 1024;
+    public static final int RETRIEVAL_LIMIT = 256 * 1024;
 
     /**
-     * Provides the bounded request stream to the normal message converter.
+     * Buffers bounded text/query endpoints; multipart remains streaming under Spring's own cap.
      *
      * @author agent
      */
     @Override
-    public ServletInputStream getInputStream() {
-      var input = new ByteArrayInputStream(bytes);
-      return new ServletInputStream() {
-        /** Reads one buffered byte. @author agent */
-        @Override
-        public int read() {
-          return input.read();
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+            throws ServletException, IOException {
+        String path = request.getRequestURI().substring(request.getContextPath().length());
+        boolean retrieval = path.endsWith("/retrieval")
+                || path.endsWith("/query")
+                || path.endsWith("/query/stream")
+                || path.matches(".*/query/[^/]+/cancel");
+        if (!path.startsWith("/api/knowledge-bases/")
+                || !request.getMethod().equals("POST")
+                || !(retrieval || path.endsWith("/documents/text"))) {
+            chain.doFilter(request, response);
+            return;
         }
+        int limit = retrieval ? RETRIEVAL_LIMIT : LIMIT;
+        String code = retrieval ? "retrieval_request_too_large" : "document_too_large";
+        if (request.getContentLengthLong() > limit) {
+            tooLarge(response, code);
+            return;
+        }
+        byte[] bytes = request.getInputStream().readNBytes(limit + 1);
+        if (bytes.length > limit) {
+            tooLarge(response, code);
+            return;
+        }
+        chain.doFilter(new BufferedRequest(request, bytes), response);
+    }
 
-        /** Reads buffered bytes. @author agent */
-        @Override
-        public int read(byte[] target, int offset, int length) {
-          return input.read(target, offset, length);
-        }
-
-        /** Reports buffered stream completion. @author agent */
-        @Override
-        public boolean isFinished() {
-          return input.available() == 0;
-        }
-
-        /** Buffered input is synchronously ready. @author agent */
-        @Override
-        public boolean isReady() {
-          return true;
-        }
-
-        /** Async reads are not used by this synchronous JSON endpoint. @author agent */
-        @Override
-        public void setReadListener(ReadListener listener) {
-          throw new UnsupportedOperationException("Synchronous bounded input");
-        }
-      };
+    private void tooLarge(HttpServletResponse response, String code) throws IOException {
+        response.setStatus(413);
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+        response.getWriter().write("{\"error\":\"" + code + "\"}");
     }
 
     /**
-     * Exposes the same bounded UTF-8 body to character readers.
+     * Replays a validated bounded body without retaining it outside the request.
      *
      * @author agent
      */
-    @Override
-    public BufferedReader getReader() {
-      return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
+    private static class BufferedRequest extends HttpServletRequestWrapper {
+        private final byte[] bytes;
+
+        BufferedRequest(HttpServletRequest original, byte[] bytes) {
+            super(original);
+            this.bytes = bytes;
+        }
+
+        /**
+         * Provides the bounded request stream to the normal message converter.
+         *
+         * @author agent
+         */
+        @Override
+        public ServletInputStream getInputStream() {
+            var input = new ByteArrayInputStream(bytes);
+            return new ServletInputStream() {
+                /** Reads one buffered byte. @author agent */
+                @Override
+                public int read() {
+                    return input.read();
+                }
+
+                /** Reads buffered bytes. @author agent */
+                @Override
+                public int read(byte[] target, int offset, int length) {
+                    return input.read(target, offset, length);
+                }
+
+                /** Reports buffered stream completion. @author agent */
+                @Override
+                public boolean isFinished() {
+                    return input.available() == 0;
+                }
+
+                /** Buffered input is synchronously ready. @author agent */
+                @Override
+                public boolean isReady() {
+                    return true;
+                }
+
+                /** Async reads are not used by this synchronous JSON endpoint. @author agent */
+                @Override
+                public void setReadListener(ReadListener listener) {
+                    throw new UnsupportedOperationException("Synchronous bounded input");
+                }
+            };
+        }
+
+        /**
+         * Exposes the same bounded UTF-8 body to character readers.
+         *
+         * @author agent
+         */
+        @Override
+        public BufferedReader getReader() {
+            return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
+        }
     }
-  }
 }

@@ -6,7 +6,7 @@ package com.trs.app.rag;
  * @author agent
  */
 public enum KnowledgeRole {
-  OWNER,
-  WRITER,
-  READER
+    OWNER,
+    WRITER,
+    READER
 }
